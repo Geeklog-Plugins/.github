@@ -1,5 +1,7 @@
 # Geeklog Plugins
 
+![Geeklog Plugins](geeklog-plugins.png)
+
 Welcome to **Geeklog Plugins**, a community-driven GitHub organization dedicated to preserving, maintaining, modernizing, and developing plugins for the [Geeklog CMS](https://www.geeklog.net/).
 
 Geeklog is an open-source content management system designed for building secure, flexible, and extensible websites. Plugins extend the core CMS with additional features ranging from analytics and SEO to media management, forums, security tools, and administrative utilities.
