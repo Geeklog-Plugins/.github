@@ -18,14 +18,28 @@ on:
         default: maps
         type: string
 
+      max_prs:
+        description: "Maximum PRs when using pr + all"
+        required: true
+        default: "15"
+        type: string
+
   schedule:
+    # Weekly read-only audit.
     - cron: "17 5 * * 1"
 
 permissions:
   contents: read
 
 concurrency:
-  group: plugin-metadata-${{ github.event_name }}-${{ inputs.repository || 'all' }}
+  group: >-
+    plugin-metadata-${{
+      github.event_name
+    }}-${{
+      inputs.mode || 'audit'
+    }}-${{
+      inputs.repository || 'all'
+    }}
   cancel-in-progress: false
 
 jobs:
@@ -34,7 +48,7 @@ jobs:
 
     runs-on: ubuntu-latest
 
-    timeout-minutes: 15
+    timeout-minutes: 20
 
     env:
       PLUGIN_METADATA_ORG: Geeklog-Plugins
@@ -49,15 +63,18 @@ jobs:
             && inputs.repository
             || 'all' }}
 
-      GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+      PLUGIN_METADATA_MAX_PRS: >-
+        ${{ github.event_name == 'workflow_dispatch'
+            && inputs.max_prs
+            || '15' }}
 
-      PLUGIN_METADATA_TOKEN: ${{ secrets.PLUGIN_METADATA_TOKEN }}
+      GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
 
     steps:
       - name: Checkout organization automation
         uses: actions/checkout@v5
 
-      - name: Verify metadata script
+      - name: Verify metadata scripts
         shell: bash
         run: |
           set -euo pipefail
@@ -67,20 +84,54 @@ jobs:
             exit 1
           fi
 
+          if [ ! -f scripts/plugin_metadata_batch.py ]; then
+            echo "::error::scripts/plugin_metadata_batch.py was not found."
+            exit 1
+          fi
+
           python3 --version
 
           python3 -m py_compile \
-            scripts/plugin_metadata.py
+            scripts/plugin_metadata.py \
+            scripts/plugin_metadata_batch.py
 
-          echo "Plugin metadata script is available and syntactically valid."
+          echo "Plugin metadata scripts are available and syntactically valid."
 
       - name: Validate workflow inputs
         shell: bash
+        env:
+          PLUGIN_METADATA_TOKEN: >-
+            ${{ github.event_name == 'workflow_dispatch'
+                && inputs.mode == 'pr'
+                && secrets.PLUGIN_METADATA_TOKEN
+                || '' }}
         run: |
           set -euo pipefail
 
           if [ -z "$PLUGIN_METADATA_REPOSITORY" ]; then
             echo "::error::Repository filter is empty."
+            exit 1
+          fi
+
+          if [ "$PLUGIN_METADATA_MODE" != "audit" ] \
+             && [ "$PLUGIN_METADATA_MODE" != "pr" ]; then
+            echo "::error::Unsupported mode: $PLUGIN_METADATA_MODE"
+            exit 1
+          fi
+
+          if ! printf '%s' "$PLUGIN_METADATA_MAX_PRS" \
+              | grep -Eq '^[0-9]+$'; then
+            echo "::error::max_prs must be a positive integer."
+            exit 1
+          fi
+
+          if [ "$PLUGIN_METADATA_MAX_PRS" -lt 1 ]; then
+            echo "::error::max_prs must be at least 1."
+            exit 1
+          fi
+
+          if [ "$PLUGIN_METADATA_MAX_PRS" -gt 25 ]; then
+            echo "::error::max_prs cannot exceed 25."
             exit 1
           fi
 
@@ -94,16 +145,41 @@ jobs:
           echo "Mode: $PLUGIN_METADATA_MODE"
           echo "Repository: $PLUGIN_METADATA_REPOSITORY"
 
+          if [ "$PLUGIN_METADATA_MODE" = "pr" ] \
+             && [ "$PLUGIN_METADATA_REPOSITORY" = "all" ]; then
+            echo "Batch PR limit: $PLUGIN_METADATA_MAX_PRS"
+          fi
+
       - name: Run plugin metadata audit
         shell: bash
+        env:
+          PLUGIN_METADATA_TOKEN: >-
+            ${{ github.event_name == 'workflow_dispatch'
+                && inputs.mode == 'pr'
+                && secrets.PLUGIN_METADATA_TOKEN
+                || '' }}
         run: |
           set -euo pipefail
 
-          python3 scripts/plugin_metadata.py \
-            --org "$PLUGIN_METADATA_ORG" \
-            --mode "$PLUGIN_METADATA_MODE" \
-            --repository "$PLUGIN_METADATA_REPOSITORY" \
-            --report PLUGIN_METADATA_REPORT.md
+          if [ "$PLUGIN_METADATA_MODE" = "pr" ] \
+             && [ "$PLUGIN_METADATA_REPOSITORY" = "all" ]; then
+
+            echo "Running safe batch PR mode."
+
+            python3 scripts/plugin_metadata_batch.py \
+              --org "$PLUGIN_METADATA_ORG" \
+              --max-prs "$PLUGIN_METADATA_MAX_PRS" \
+              --report PLUGIN_METADATA_REPORT.md
+
+          else
+
+            python3 scripts/plugin_metadata.py \
+              --org "$PLUGIN_METADATA_ORG" \
+              --mode "$PLUGIN_METADATA_MODE" \
+              --repository "$PLUGIN_METADATA_REPOSITORY" \
+              --report PLUGIN_METADATA_REPORT.md
+
+          fi
 
       - name: Show report
         if: always()
@@ -135,7 +211,7 @@ jobs:
         if: always()
         uses: actions/upload-artifact@v4
         with:
-          name: plugin-metadata-report
+          name: plugin-metadata-report-${{ github.run_id }}
           path: PLUGIN_METADATA_REPORT.md
           if-no-files-found: warn
           retention-days: 30
