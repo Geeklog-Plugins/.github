@@ -4,43 +4,138 @@ on:
   workflow_dispatch:
     inputs:
       mode:
-        description: "Audit only, or open pull requests in plugin repositories"
+        description: "Audit metadata or create safe pull requests"
         required: true
         default: audit
         type: choice
         options:
           - audit
           - pr
+
+      repository:
+        description: "Plugin repository to process, or all"
+        required: true
+        default: maps
+        type: string
+
   schedule:
     - cron: "17 5 * * 1"
 
 permissions:
   contents: read
 
+concurrency:
+  group: plugin-metadata-${{ github.event_name }}-${{ inputs.repository || 'all' }}
+  cancel-in-progress: false
+
 jobs:
   plugin-metadata:
+    name: Audit Geeklog plugin metadata
+
     runs-on: ubuntu-latest
+
+    timeout-minutes: 15
+
     env:
       PLUGIN_METADATA_ORG: Geeklog-Plugins
-      PLUGIN_METADATA_MODE: ${{ github.event_name == 'workflow_dispatch' && inputs.mode || 'audit' }}
-      # Required only for mode=pr. Use a fine-grained PAT or GitHub App token
-      # with Contents: write and Pull requests: write on target repositories.
+
+      PLUGIN_METADATA_MODE: >-
+        ${{ github.event_name == 'workflow_dispatch'
+            && inputs.mode
+            || 'audit' }}
+
+      PLUGIN_METADATA_REPOSITORY: >-
+        ${{ github.event_name == 'workflow_dispatch'
+            && inputs.repository
+            || 'all' }}
+
+      GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+
       PLUGIN_METADATA_TOKEN: ${{ secrets.PLUGIN_METADATA_TOKEN }}
 
     steps:
-      - name: Checkout memorandum
+      - name: Checkout organization automation
         uses: actions/checkout@v5
 
-      - name: Audit plugin metadata
+      - name: Verify metadata script
+        shell: bash
         run: |
-          python3 tools/plugin_metadata.py \
+          set -euo pipefail
+
+          if [ ! -f scripts/plugin_metadata.py ]; then
+            echo "::error::scripts/plugin_metadata.py was not found."
+            exit 1
+          fi
+
+          python3 --version
+
+          python3 -m py_compile \
+            scripts/plugin_metadata.py
+
+          echo "Plugin metadata script is available and syntactically valid."
+
+      - name: Validate workflow inputs
+        shell: bash
+        run: |
+          set -euo pipefail
+
+          if [ -z "$PLUGIN_METADATA_REPOSITORY" ]; then
+            echo "::error::Repository filter is empty."
+            exit 1
+          fi
+
+          if [ "$PLUGIN_METADATA_MODE" = "pr" ]; then
+            if [ -z "$PLUGIN_METADATA_TOKEN" ]; then
+              echo "::error::PLUGIN_METADATA_TOKEN is required for PR mode."
+              exit 1
+            fi
+          fi
+
+          echo "Mode: $PLUGIN_METADATA_MODE"
+          echo "Repository: $PLUGIN_METADATA_REPOSITORY"
+
+      - name: Run plugin metadata audit
+        shell: bash
+        run: |
+          set -euo pipefail
+
+          python3 scripts/plugin_metadata.py \
             --org "$PLUGIN_METADATA_ORG" \
             --mode "$PLUGIN_METADATA_MODE" \
+            --repository "$PLUGIN_METADATA_REPOSITORY" \
             --report PLUGIN_METADATA_REPORT.md
 
+      - name: Show report
+        if: always()
+        shell: bash
+        run: |
+          if [ -f PLUGIN_METADATA_REPORT.md ]; then
+            echo "----- Plugin metadata report -----"
+            cat PLUGIN_METADATA_REPORT.md
+          else
+            echo "PLUGIN_METADATA_REPORT.md was not generated."
+          fi
+
+      - name: Add report to job summary
+        if: always()
+        shell: bash
+        run: |
+          if [ -f PLUGIN_METADATA_REPORT.md ]; then
+            cat PLUGIN_METADATA_REPORT.md \
+              >> "$GITHUB_STEP_SUMMARY"
+          else
+            {
+              echo "## Plugin metadata audit"
+              echo
+              echo "No report was generated."
+            } >> "$GITHUB_STEP_SUMMARY"
+          fi
+
       - name: Publish audit report
+        if: always()
         uses: actions/upload-artifact@v4
         with:
           name: plugin-metadata-report
           path: PLUGIN_METADATA_REPORT.md
-          if-no-files-found: error
+          if-no-files-found: warn
+          retention-days: 30
