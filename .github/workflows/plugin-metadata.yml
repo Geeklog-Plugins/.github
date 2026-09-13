@@ -11,6 +11,7 @@ on:
         options:
           - audit
           - pr
+
   schedule:
     - cron: "17 5 * * 1"
 
@@ -19,28 +20,75 @@ permissions:
 
 jobs:
   plugin-metadata:
+    name: Audit Geeklog plugin metadata
     runs-on: ubuntu-latest
+
     env:
       PLUGIN_METADATA_ORG: Geeklog-Plugins
       PLUGIN_METADATA_MODE: ${{ github.event_name == 'workflow_dispatch' && inputs.mode || 'audit' }}
-      # Required only for mode=pr. Use a fine-grained PAT or GitHub App token
-      # with Contents: write and Pull requests: write on target repositories.
+
+      # Used for normal read-only API access.
+      GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+
+      # Required only for mode=pr.
+      # This token must have access to the target Geeklog-Plugins repositories
+      # with Contents: read/write and Pull requests: read/write.
       PLUGIN_METADATA_TOKEN: ${{ secrets.PLUGIN_METADATA_TOKEN }}
 
     steps:
-      - name: Checkout memorandum
+      - name: Checkout organization automation
         uses: actions/checkout@v5
 
-      - name: Audit plugin metadata
+      - name: Verify metadata script
+        shell: bash
         run: |
-          python3 tools/plugin_metadata.py \
+          set -euo pipefail
+
+          test -f scripts/plugin_metadata.py
+
+          python3 --version
+          python3 -m py_compile scripts/plugin_metadata.py
+
+          echo "Plugin metadata script is available and syntactically valid."
+
+      - name: Run plugin metadata audit
+        shell: bash
+        run: |
+          set -euo pipefail
+
+          python3 scripts/plugin_metadata.py \
             --org "$PLUGIN_METADATA_ORG" \
             --mode "$PLUGIN_METADATA_MODE" \
             --report PLUGIN_METADATA_REPORT.md
 
+      - name: Show report summary
+        if: always()
+        shell: bash
+        run: |
+          if [ -f PLUGIN_METADATA_REPORT.md ]; then
+            echo "----- Plugin metadata report -----"
+            cat PLUGIN_METADATA_REPORT.md
+          else
+            echo "PLUGIN_METADATA_REPORT.md was not generated."
+          fi
+
+      - name: Add report to job summary
+        if: always()
+        shell: bash
+        run: |
+          if [ -f PLUGIN_METADATA_REPORT.md ]; then
+            cat PLUGIN_METADATA_REPORT.md >> "$GITHUB_STEP_SUMMARY"
+          else
+            echo "## Plugin metadata audit" >> "$GITHUB_STEP_SUMMARY"
+            echo "" >> "$GITHUB_STEP_SUMMARY"
+            echo "No report was generated." >> "$GITHUB_STEP_SUMMARY"
+          fi
+
       - name: Publish audit report
+        if: always()
         uses: actions/upload-artifact@v4
         with:
           name: plugin-metadata-report
           path: PLUGIN_METADATA_REPORT.md
-          if-no-files-found: error
+          if-no-files-found: warn
+          retention-days: 30
