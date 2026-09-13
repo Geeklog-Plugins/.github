@@ -32,17 +32,28 @@ IMAGE_EXTS = (
 
 PR_BRANCH = "automation/plugin-metadata"
 
+PLUGIN_ID_RE = re.compile(
+    r"^[A-Za-z0-9_.-]+$"
+)
+
 
 class GitHub:
     def __init__(self, token):
         self.token = token
 
     def request(self, method, path, payload=None):
-        url = path if path.startswith("https://") else API + path
+        url = (
+            path
+            if path.startswith("https://")
+            else API + path
+        )
 
         data = None
+
         if payload is not None:
-            data = json.dumps(payload).encode("utf-8")
+            data = json.dumps(
+                payload
+            ).encode("utf-8")
 
         request = urllib.request.Request(
             url,
@@ -54,10 +65,12 @@ class GitHub:
             "Accept",
             "application/vnd.github+json",
         )
+
         request.add_header(
             "X-GitHub-Api-Version",
             "2022-11-28",
         )
+
         request.add_header(
             "User-Agent",
             "geeklog-plugin-metadata-audit",
@@ -74,12 +87,15 @@ class GitHub:
                 request,
                 timeout=30,
             ) as response:
-                raw = response.read().decode("utf-8")
+                raw = response.read().decode(
+                    "utf-8"
+                )
 
-                if not raw:
-                    return None
-
-                return json.loads(raw)
+                return (
+                    json.loads(raw)
+                    if raw
+                    else None
+                )
 
         except urllib.error.HTTPError as exc:
             body = exc.read().decode(
@@ -132,7 +148,11 @@ def paginate(gh, path):
     page = 1
 
     while True:
-        separator = "&" if "?" in path else "?"
+        separator = (
+            "&"
+            if "?" in path
+            else "?"
+        )
 
         rows = gh.get(
             "%s%sper_page=100&page=%d"
@@ -164,29 +184,28 @@ def normalize(value):
 
 
 def decode_content(obj):
-    if not isinstance(obj, dict):
+    if (
+        not isinstance(obj, dict)
+        or obj.get("encoding") != "base64"
+    ):
         return ""
-
-    if obj.get("encoding") != "base64":
-        return ""
-
-    content = obj.get(
-        "content",
-        "",
-    )
 
     try:
         return base64.b64decode(
-            content
+            obj.get(
+                "content",
+                "",
+            )
         ).decode(
             "utf-8",
             "replace",
         )
+
     except Exception:
         return ""
 
 
-def fetch_text(
+def fetch_content_object(
     gh,
     org,
     repo,
@@ -203,7 +222,7 @@ def fetch_text(
         safe="",
     )
 
-    obj = gh.get(
+    return gh.get(
         "/repos/%s/%s/contents/%s?ref=%s"
         % (
             org,
@@ -213,8 +232,6 @@ def fetch_text(
         )
     )
 
-    return decode_content(obj)
-
 
 def fetch_optional_content(
     gh,
@@ -223,31 +240,38 @@ def fetch_optional_content(
     path,
     ref,
 ):
-    quoted_path = urllib.parse.quote(
-        path,
-        safe="/",
-    )
-
-    quoted_ref = urllib.parse.quote(
-        ref,
-        safe="",
-    )
-
     try:
-        return gh.get(
-            "/repos/%s/%s/contents/%s?ref=%s"
-            % (
-                org,
-                repo,
-                quoted_path,
-                quoted_ref,
-            )
+        return fetch_content_object(
+            gh,
+            org,
+            repo,
+            path,
+            ref,
         )
+
     except RuntimeError as exc:
         if "404" in str(exc):
             return None
 
         raise
+
+
+def fetch_text(
+    gh,
+    org,
+    repo,
+    path,
+    ref,
+):
+    return decode_content(
+        fetch_content_object(
+            gh,
+            org,
+            repo,
+            path,
+            ref,
+        )
+    )
 
 
 def extract_function_body(
@@ -261,19 +285,44 @@ def extract_function_body(
         re.I,
     )
 
-    match = pattern.search(source)
+    match = pattern.search(
+        source
+    )
 
     if not match:
         return ""
 
     start = match.end()
+
     depth = 1
     position = start
+
+    quote = None
+    escaped = False
 
     while position < len(source):
         char = source[position]
 
-        if char == "{":
+        if quote is not None:
+            if escaped:
+                escaped = False
+
+            elif char == "\\":
+                escaped = True
+
+            elif char == quote:
+                quote = None
+
+            position += 1
+            continue
+
+        if char in (
+            "'",
+            '"',
+        ):
+            quote = char
+
+        elif char == "{":
             depth += 1
 
         elif char == "}":
@@ -296,12 +345,10 @@ def find_plugin_identity(
     branch,
     paths,
 ):
-    candidates = (
+    for candidate in (
         "functions.inc",
         "api.inc",
-    )
-
-    for candidate in candidates:
+    ):
         if candidate not in paths:
             continue
 
@@ -321,33 +368,149 @@ def find_plugin_identity(
         )
 
         if matches:
-            plugin_id = matches[0].lower()
+            plugin_id = (
+                matches[0].lower()
+            )
 
             function_name = (
                 "plugin_geticon_"
                 + plugin_id
             )
 
-            body = extract_function_body(
-                source,
-                function_name,
-            )
-
             return {
                 "id": plugin_id,
                 "source_file": candidate,
-                "source": source,
                 "icon_function": function_name,
-                "icon_body": body,
+                "icon_body": extract_function_body(
+                    source,
+                    function_name,
+                ),
             }
 
+    fallback_id = repo.lower()
+
+    if not PLUGIN_ID_RE.match(
+        fallback_id
+    ):
+        fallback_id = re.sub(
+            r"[^a-z0-9_.-]+",
+            "-",
+            fallback_id,
+        ).strip("-")
+
     return {
-        "id": repo.lower(),
+        "id": fallback_id,
         "source_file": "",
-        "source": "",
         "icon_function": "",
         "icon_body": "",
     }
+
+
+def decode_php_single_quoted(value):
+    return (
+        value
+        .replace(
+            "\\'",
+            "'",
+        )
+        .replace(
+            "\\\\",
+            "\\",
+        )
+    )
+
+
+def decode_php_double_quoted(value):
+    return (
+        value
+        .replace(
+            '\\"',
+            '"',
+        )
+        .replace(
+            "\\\\",
+            "\\",
+        )
+        .replace(
+            "\\n",
+            "\n",
+        )
+        .replace(
+            "\\r",
+            "\r",
+        )
+        .replace(
+            "\\t",
+            "\t",
+        )
+    )
+
+
+def find_plugin_display_name(
+    gh,
+    org,
+    repo,
+    branch,
+    paths,
+):
+    candidates = (
+        "language/english.php",
+        "language/english_utf-8.php",
+        "language/english_utf8.php",
+    )
+
+    pattern = re.compile(
+        r"""['"]plugin_name['"]\s*=>\s*(?:'((?:\\.|[^'\\])*)'|"((?:\\.|[^"\\])*)")""",
+        re.I,
+    )
+
+    for candidate in candidates:
+        if candidate not in paths:
+            continue
+
+        source = fetch_text(
+            gh,
+            org,
+            repo,
+            candidate,
+            branch,
+        )
+
+        match = pattern.search(
+            source
+        )
+
+        if not match:
+            continue
+
+        if match.group(1) is not None:
+            display_name = (
+                decode_php_single_quoted(
+                    match.group(1)
+                )
+            )
+
+        else:
+            display_name = (
+                decode_php_double_quoted(
+                    match.group(2)
+                )
+            )
+
+        display_name = " ".join(
+            display_name.split()
+        ).strip()
+
+        if display_name:
+            return (
+                display_name,
+                candidate,
+            )
+
+    return (
+        repo,
+        "repository fallback",
+    )
 
 
 def resolve_runtime_icon(
@@ -363,24 +526,32 @@ def resolve_runtime_icon(
     }
 
     patterns = (
-        r"/plugins/[A-Za-z0-9_.-]+/"
-        r"(images/[A-Za-z0-9_./ -]+\."
-        r"(?:png|jpe?g|gif|svg|webp))",
+        (
+            r"/plugins/[A-Za-z0-9_.-]+/"
+            r"(images/[A-Za-z0-9_./ -]+"
+            r"\.(?:png|jpe?g|gif|svg|webp))"
+        ),
 
-        r"['\"]"
-        r"(images/[A-Za-z0-9_./ -]+\."
-        r"(?:png|jpe?g|gif|svg|webp))"
-        r"['\"]",
+        (
+            r"""['"]("""
+            r"images/[A-Za-z0-9_./ -]+"
+            r"\.(?:png|jpe?g|gif|svg|webp)"
+            r""")['"]"""
+        ),
 
-        r"['\"]"
-        r"(admin/images/[A-Za-z0-9_./ -]+\."
-        r"(?:png|jpe?g|gif|svg|webp))"
-        r"['\"]",
+        (
+            r"""['"]("""
+            r"admin/images/[A-Za-z0-9_./ -]+"
+            r"\.(?:png|jpe?g|gif|svg|webp)"
+            r""")['"]"""
+        ),
 
-        r"['\"]"
-        r"(public_html/[A-Za-z0-9_./ -]+\."
-        r"(?:png|jpe?g|gif|svg|webp))"
-        r"['\"]",
+        (
+            r"""['"]("""
+            r"public_html/[A-Za-z0-9_./ -]+"
+            r"\.(?:png|jpe?g|gif|svg|webp)"
+            r""")['"]"""
+        ),
     )
 
     found = []
@@ -391,20 +562,25 @@ def resolve_runtime_icon(
             function_body,
             re.I,
         ):
-            path = match.group(1)
+            relative_path = (
+                match.group(1)
+                .replace(
+                    "\\",
+                    "/",
+                )
+                .strip()
+                .lstrip("/")
+            )
 
-            path = path.replace(
-                "\\",
-                "/",
-            ).lstrip("/")
-
-            found.append(path)
+            found.append(
+                relative_path
+            )
 
     checked = set()
 
     for relative_path in found:
         candidates = [
-            relative_path,
+            relative_path
         ]
 
         if relative_path.startswith(
@@ -412,11 +588,13 @@ def resolve_runtime_icon(
         ):
             candidates.insert(
                 0,
-                "admin/" + relative_path,
+                "admin/"
+                + relative_path,
             )
 
             candidates.append(
-                "public_html/" + relative_path
+                "public_html/"
+                + relative_path
             )
 
         for candidate in candidates:
@@ -425,10 +603,14 @@ def resolve_runtime_icon(
             if key in checked:
                 continue
 
-            checked.add(key)
+            checked.add(
+                key
+            )
 
             if key in repository_paths:
-                return repository_paths[key]
+                return repository_paths[
+                    key
+                ]
 
     return ""
 
@@ -444,6 +626,19 @@ def image_candidates(
         normalize(plugin_id),
         normalize(repo_name),
     }
+
+    suspicious_terms = (
+        "snap",
+        "screenshot",
+        "preview",
+        "banner",
+        "header",
+        "background",
+        "sample",
+        "demo",
+        "thumb",
+        "thumbnail",
+    )
 
     ranked = []
 
@@ -488,19 +683,10 @@ def image_candidates(
         if stem in preferred_names:
             score -= 45
 
-        elif normalize(stem) in preferred_names:
+        elif normalize(
+            stem
+        ) in preferred_names:
             score -= 35
-
-        suspicious_terms = (
-            "snap",
-            "screenshot",
-            "preview",
-            "banner",
-            "header",
-            "background",
-            "sample",
-            "demo",
-        )
 
         for term in suspicious_terms:
             if term in filename:
@@ -522,97 +708,221 @@ def image_candidates(
 
     return [
         path
-        for score, path in ranked
+        for _, path in ranked
     ]
 
 
-def valid_existing_manifest(text):
-    try:
-        data = json.loads(text)
-
-    except Exception:
-        return False, None
-
+def validate_manifest_data(
+    data,
+    paths=None,
+):
     if not isinstance(
         data,
         dict,
     ):
-        return False, data
+        return (
+            False,
+            "manifest is not a JSON object",
+        )
 
-    if data.get("schema") != 1:
-        return False, data
+    if data.get(
+        "schema"
+    ) != 1:
+        return (
+            False,
+            "schema must be 1",
+        )
 
-    plugin_id = data.get("id")
+    plugin_id = data.get(
+        "id"
+    )
 
     if (
-        not isinstance(plugin_id, str)
+        not isinstance(
+            plugin_id,
+            str,
+        )
         or not plugin_id.strip()
+        or not PLUGIN_ID_RE.match(
+            plugin_id
+        )
     ):
-        return False, data
+        return (
+            False,
+            "invalid plugin id",
+        )
 
-    name = data.get("name")
+    name = data.get(
+        "name"
+    )
 
     if (
-        not isinstance(name, str)
+        not isinstance(
+            name,
+            str,
+        )
         or not name.strip()
     ):
-        return False, data
+        return (
+            False,
+            "invalid plugin name",
+        )
 
-    icon = data.get("icon")
+    icon = data.get(
+        "icon"
+    )
 
     if icon is not None:
         if (
-            not isinstance(icon, str)
+            not isinstance(
+                icon,
+                str,
+            )
             or not icon.strip()
         ):
-            return False, data
+            return (
+                False,
+                "invalid icon",
+            )
 
-        if icon.startswith("/"):
-            return False, data
+        normalized_icon = (
+            icon.replace(
+                "\\",
+                "/",
+            )
+        )
 
-        parts = icon.replace(
-            "\\",
-            "/",
-        ).split("/")
+        if (
+            normalized_icon.startswith(
+                "/"
+            )
+            or "://" in normalized_icon
+            or normalized_icon.startswith(
+                "//"
+            )
+            or ".." in normalized_icon.split(
+                "/"
+            )
+        ):
+            return (
+                False,
+                (
+                    "icon must be a safe "
+                    "repository-relative path"
+                ),
+            )
 
-        if ".." in parts:
-            return False, data
+        if not normalized_icon.lower().endswith(
+            IMAGE_EXTS
+        ):
+            return (
+                False,
+                (
+                    "icon is not a supported "
+                    "image type"
+                ),
+            )
 
-    return True, data
+        if (
+            paths is not None
+            and normalized_icon not in paths
+        ):
+            return (
+                False,
+                (
+                    "icon path does not exist "
+                    "in repository"
+                ),
+            )
+
+    return (
+        True,
+        "",
+    )
+
+
+def valid_existing_manifest(
+    text,
+    paths=None,
+):
+    try:
+        data = json.loads(
+            text
+        )
+
+    except Exception:
+        return (
+            False,
+            None,
+            "invalid JSON",
+        )
+
+    valid, reason = (
+        validate_manifest_data(
+            data,
+            paths,
+        )
+    )
+
+    return (
+        valid,
+        data,
+        reason,
+    )
 
 
 def create_manifest(
     plugin_id,
-    repo_name,
+    plugin_name,
     icon,
 ):
     data = {
         "schema": 1,
         "id": plugin_id,
-        "name": repo_name,
+        "name": plugin_name,
         "icon": icon,
     }
 
-    return json.dumps(
-        data,
-        indent=2,
-        ensure_ascii=False,
-    ) + "\n"
+    valid, reason = (
+        validate_manifest_data(
+            data
+        )
+    )
+
+    if not valid:
+        raise RuntimeError(
+            (
+                "Refusing to create "
+                "invalid plugin.json: "
+            )
+            + reason
+        )
+
+    return (
+        json.dumps(
+            data,
+            indent=2,
+            ensure_ascii=False,
+        )
+        + "\n"
+    )
 
 
-def branch_exists(
+def branch_ref(
     gh,
     org,
     repo,
     branch,
 ):
-    encoded_branch = urllib.parse.quote(
-        branch,
-        safe="",
+    encoded_branch = (
+        urllib.parse.quote(
+            branch,
+            safe="",
+        )
     )
 
     try:
-        gh.get(
+        return gh.get(
             "/repos/%s/%s/git/ref/heads/%s"
             % (
                 org,
@@ -621,11 +931,9 @@ def branch_exists(
             )
         )
 
-        return True
-
     except RuntimeError as exc:
         if "404" in str(exc):
-            return False
+            return None
 
         raise
 
@@ -645,8 +953,10 @@ def get_open_metadata_pr(
     )
 
     pulls = gh.get(
-        "/repos/%s/%s/pulls"
-        "?state=open&head=%s"
+        (
+            "/repos/%s/%s/pulls"
+            "?state=open&head=%s"
+        )
         % (
             org,
             repo,
@@ -660,73 +970,12 @@ def get_open_metadata_pr(
     return None
 
 
-def open_pr_for_manifest(
+def create_plugin_json_on_branch(
     gh,
     org,
     repo,
-    default_branch,
     manifest_text,
 ):
-    existing_pr = get_open_metadata_pr(
-        gh,
-        org,
-        repo,
-    )
-
-    if existing_pr:
-        return existing_pr[
-            "html_url"
-        ]
-
-    if branch_exists(
-        gh,
-        org,
-        repo,
-        PR_BRANCH,
-    ):
-        raise RuntimeError(
-            "Branch %s already exists without an open PR; "
-            "review or delete that branch before retrying"
-            % PR_BRANCH
-        )
-
-    encoded_default_branch = (
-        urllib.parse.quote(
-            default_branch,
-            safe="",
-        )
-    )
-
-    base = gh.get(
-        "/repos/%s/%s/git/ref/heads/%s"
-        % (
-            org,
-            repo,
-            encoded_default_branch,
-        )
-    )
-
-    sha = base[
-        "object"
-    ][
-        "sha"
-    ]
-
-    gh.post(
-        "/repos/%s/%s/git/refs"
-        % (
-            org,
-            repo,
-        ),
-        {
-            "ref": (
-                "refs/heads/"
-                + PR_BRANCH
-            ),
-            "sha": sha,
-        },
-    )
-
     encoded_manifest = (
         base64.b64encode(
             manifest_text.encode(
@@ -745,13 +994,21 @@ def open_pr_for_manifest(
         ),
         {
             "message": (
-                "Add static plugin metadata manifest"
+                "Add static plugin "
+                "metadata manifest"
             ),
             "content": encoded_manifest,
             "branch": PR_BRANCH,
         },
     )
 
+
+def create_metadata_pr(
+    gh,
+    org,
+    repo,
+    default_branch,
+):
     pr = gh.post(
         "/repos/%s/%s/pulls"
         % (
@@ -760,17 +1017,21 @@ def open_pr_for_manifest(
         ),
         {
             "title": (
-                "Add static plugin metadata manifest"
+                "Add static plugin "
+                "metadata manifest"
             ),
             "head": PR_BRANCH,
             "base": default_branch,
             "body": (
                 "Adds `plugin.json` using the "
-                "Geeklog plugin metadata convention.\n\n"
-                "The declared icon was confirmed from "
-                "the existing `plugin_geticon_*()` "
-                "runtime callback and references an "
-                "existing repository asset.\n\n"
+                "Geeklog plugin metadata convention."
+                "\n\n"
+                "The plugin name was read from "
+                "the English language file and "
+                "the icon was confirmed from the "
+                "existing `plugin_geticon_*()` "
+                "runtime callback."
+                "\n\n"
                 "No executable plugin code is changed."
             ),
         },
@@ -781,16 +1042,175 @@ def open_pr_for_manifest(
     ]
 
 
+def open_pr_for_manifest(
+    gh,
+    org,
+    repo,
+    default_branch,
+    manifest_text,
+):
+    existing_pr = (
+        get_open_metadata_pr(
+            gh,
+            org,
+            repo,
+        )
+    )
+
+    if existing_pr:
+        return existing_pr[
+            "html_url"
+        ]
+
+    encoded_default_branch = (
+        urllib.parse.quote(
+            default_branch,
+            safe="",
+        )
+    )
+
+    base = gh.get(
+        "/repos/%s/%s/git/ref/heads/%s"
+        % (
+            org,
+            repo,
+            encoded_default_branch,
+        )
+    )
+
+    base_sha = base[
+        "object"
+    ][
+        "sha"
+    ]
+
+    existing_branch = branch_ref(
+        gh,
+        org,
+        repo,
+        PR_BRANCH,
+    )
+
+    if existing_branch is None:
+        gh.post(
+            "/repos/%s/%s/git/refs"
+            % (
+                org,
+                repo,
+            ),
+            {
+                "ref": (
+                    "refs/heads/"
+                    + PR_BRANCH
+                ),
+                "sha": base_sha,
+            },
+        )
+
+        create_plugin_json_on_branch(
+            gh,
+            org,
+            repo,
+            manifest_text,
+        )
+
+        return create_metadata_pr(
+            gh,
+            org,
+            repo,
+            default_branch,
+        )
+
+    branch_sha = (
+        existing_branch[
+            "object"
+        ][
+            "sha"
+        ]
+    )
+
+    plugin_json = (
+        fetch_optional_content(
+            gh,
+            org,
+            repo,
+            "plugin.json",
+            PR_BRANCH,
+        )
+    )
+
+    if plugin_json is not None:
+        existing_text = (
+            decode_content(
+                plugin_json
+            )
+        )
+
+        if existing_text == manifest_text:
+            return create_metadata_pr(
+                gh,
+                org,
+                repo,
+                default_branch,
+            )
+
+        raise RuntimeError(
+            (
+                "Branch %s already contains "
+                "a different plugin.json; "
+                "manual review required"
+            )
+            % PR_BRANCH
+        )
+
+    if branch_sha != base_sha:
+        raise RuntimeError(
+            (
+                "Branch %s already exists, "
+                "has no plugin.json, and differs "
+                "from the current base branch; "
+                "manual review required"
+            )
+            % PR_BRANCH
+        )
+
+    create_plugin_json_on_branch(
+        gh,
+        org,
+        repo,
+        manifest_text,
+    )
+
+    return create_metadata_pr(
+        gh,
+        org,
+        repo,
+        default_branch,
+    )
+
+
 def repository_selected(
     repo_name,
     requested,
 ):
-    if requested.lower() == "all":
-        return True
-
     return (
-        repo_name.lower()
+        requested.lower() == "all"
+        or repo_name.lower()
         == requested.lower()
+    )
+
+
+def safe_cell(value):
+    return (
+        str(value)
+        .replace(
+            "|",
+            "\\|",
+        )
+        .replace(
+            "\n",
+            " ",
+        )
     )
 
 
@@ -798,7 +1218,8 @@ def main():
     parser = argparse.ArgumentParser(
         description=(
             "Audit Geeklog plugin metadata "
-            "and optionally open safe manifest PRs."
+            "and optionally open safe "
+            "plugin.json pull requests."
         )
     )
 
@@ -843,6 +1264,22 @@ def main():
 
     args = parser.parse_args()
 
+    if (
+        args.mode == "pr"
+        and args.repository.lower()
+        == "all"
+    ):
+        print(
+            (
+                "ERROR: PR mode requires one "
+                "explicit repository; 'all' "
+                "is intentionally disabled."
+            ),
+            file=sys.stderr,
+        )
+
+        return 2
+
     read_token = os.getenv(
         "GITHUB_TOKEN",
         "",
@@ -853,13 +1290,13 @@ def main():
         "",
     )
 
-    token = read_token
-
     if args.mode == "pr":
         if not write_token:
             print(
-                "ERROR: PLUGIN_METADATA_TOKEN "
-                "is required in pr mode.",
+                (
+                    "ERROR: PLUGIN_METADATA_TOKEN "
+                    "is required in pr mode."
+                ),
                 file=sys.stderr,
             )
 
@@ -867,7 +1304,12 @@ def main():
 
         token = write_token
 
-    gh = GitHub(token)
+    else:
+        token = read_token
+
+    gh = GitHub(
+        token
+    )
 
     rows = []
     selected_found = False
@@ -879,12 +1321,12 @@ def main():
     )
 
     for repo in repositories:
-        name = repo[
+        repo_name = repo[
             "name"
         ]
 
         if not repository_selected(
-            name,
+            repo_name,
             args.repository,
         ):
             continue
@@ -892,16 +1334,22 @@ def main():
         selected_found = True
 
         if (
-            name in DEFAULT_EXCLUDES
-            or repo.get("archived")
-            or repo.get("fork")
+            repo_name in DEFAULT_EXCLUDES
+            or repo.get(
+                "archived"
+            )
+            or repo.get(
+                "fork"
+            )
         ):
             rows.append(
                 {
-                    "repo": name,
+                    "repo": repo_name,
                     "status": "SKIPPED",
                     "confidence": "-",
                     "id": "",
+                    "name": "",
+                    "name_source": "-",
                     "icon": "",
                     "action": (
                         "excluded, archived or fork"
@@ -923,44 +1371,74 @@ def main():
         )
 
         tree = gh.get(
-            "/repos/%s/%s/git/trees/%s"
-            "?recursive=1"
+            (
+                "/repos/%s/%s/git/trees/%s"
+                "?recursive=1"
+            )
             % (
                 args.org,
-                name,
+                repo_name,
                 encoded_branch,
             )
         )
 
+        if tree.get(
+            "truncated"
+        ):
+            rows.append(
+                {
+                    "repo": repo_name,
+                    "status": "REVIEW",
+                    "confidence": "-",
+                    "id": "",
+                    "name": "",
+                    "name_source": "-",
+                    "icon": "",
+                    "action": (
+                        "repository tree was "
+                        "truncated by GitHub API"
+                    ),
+                }
+            )
+
+            continue
+
         paths = [
-            item["path"]
+            item[
+                "path"
+            ]
             for item in tree.get(
                 "tree",
                 [],
             )
-            if item.get("type") == "blob"
+            if item.get(
+                "type"
+            ) == "blob"
         ]
 
-        path_set = set(paths)
+        path_set = set(
+            paths
+        )
 
         if "plugin.json" in path_set:
             text = fetch_text(
                 gh,
                 args.org,
-                name,
+                repo_name,
                 "plugin.json",
                 default_branch,
             )
 
-            valid, data = (
+            valid, data, reason = (
                 valid_existing_manifest(
-                    text
+                    text,
+                    path_set,
                 )
             )
 
             rows.append(
                 {
-                    "repo": name,
+                    "repo": repo_name,
                     "status": (
                         "OK"
                         if valid
@@ -982,6 +1460,22 @@ def main():
                         )
                         else ""
                     ),
+                    "name": (
+                        data.get(
+                            "name",
+                            "",
+                        )
+                        if isinstance(
+                            data,
+                            dict,
+                        )
+                        else ""
+                    ),
+                    "name_source": (
+                        "plugin.json"
+                        if valid
+                        else "-"
+                    ),
                     "icon": (
                         data.get(
                             "icon",
@@ -997,7 +1491,8 @@ def main():
                         "existing manifest"
                         if valid
                         else (
-                            "invalid plugin.json"
+                            "invalid plugin.json: "
+                            + reason
                         )
                     ),
                 }
@@ -1008,7 +1503,7 @@ def main():
         identity = find_plugin_identity(
             gh,
             args.org,
-            name,
+            repo_name,
             default_branch,
             path_set,
         )
@@ -1016,6 +1511,16 @@ def main():
         plugin_id = identity[
             "id"
         ]
+
+        plugin_name, name_source = (
+            find_plugin_display_name(
+                gh,
+                args.org,
+                repo_name,
+                default_branch,
+                path_set,
+            )
+        )
 
         confirmed_icon = (
             resolve_runtime_icon(
@@ -1026,85 +1531,124 @@ def main():
             )
         )
 
-        confidence = ""
-        icon = ""
-
         if confirmed_icon:
-            confidence = (
-                "runtime callback"
-            )
-
             icon = confirmed_icon
 
-            status = "CONFIRMED"
+            if name_source.startswith(
+                "language/"
+            ):
+                status = (
+                    "CONFIRMED"
+                )
+
+                confidence = (
+                    "runtime callback + "
+                    "english plugin_name"
+                )
+
+            else:
+                status = (
+                    "CANDIDATE"
+                )
+
+                confidence = (
+                    "runtime callback + "
+                    "repository-name fallback"
+                )
 
         else:
             candidates = (
                 image_candidates(
                     paths,
                     plugin_id,
-                    name,
+                    repo_name,
                 )
             )
 
             if candidates:
-                confidence = (
-                    "heuristic"
+                icon = candidates[
+                    0
+                ]
+
+                status = (
+                    "CANDIDATE"
                 )
 
-                icon = candidates[0]
-
-                status = "CANDIDATE"
+                confidence = (
+                    "heuristic icon"
+                )
 
             else:
-                status = "REVIEW"
-                confidence = "-"
                 icon = ""
 
-        action = "audit only"
+                status = (
+                    "REVIEW"
+                )
+
+                confidence = "-"
+
+        if status == "REVIEW":
+            action = (
+                "no reliable icon found"
+            )
+
+        elif status == "CANDIDATE":
+            action = (
+                "audit only; manual "
+                "review required"
+            )
+
+        else:
+            action = (
+                "audit only"
+            )
 
         if args.mode == "pr":
             if status != "CONFIRMED":
                 action = (
-                    "PR not created: "
-                    "only CONFIRMED icons "
-                    "are eligible"
+                    "PR not created: only "
+                    "CONFIRMED metadata is eligible"
                 )
 
             else:
                 manifest = (
                     create_manifest(
                         plugin_id,
-                        name,
+                        plugin_name,
                         icon,
                     )
                 )
 
                 try:
-                    pr_url = (
+                    action = (
                         open_pr_for_manifest(
                             gh,
                             args.org,
-                            name,
+                            repo_name,
                             default_branch,
                             manifest,
                         )
                     )
 
-                    action = pr_url
                     status = "PR"
 
                 except Exception as exc:
-                    status = "ERROR"
+                    status = (
+                        "ERROR"
+                    )
 
-                    action = str(exc)
+                    action = str(
+                        exc
+                    )
 
         rows.append(
             {
-                "repo": name,
+                "repo": repo_name,
                 "status": status,
                 "confidence": confidence,
                 "id": plugin_id,
+                "name": plugin_name,
+                "name_source": name_source,
                 "icon": icon,
                 "action": action,
             }
@@ -1116,8 +1660,11 @@ def main():
         and not selected_found
     ):
         print(
-            "ERROR: repository '%s' was not found "
-            "in organization '%s'."
+            (
+                "ERROR: repository '%s' "
+                "was not found in "
+                "organization '%s'."
+            )
             % (
                 args.repository,
                 args.org,
@@ -1138,54 +1685,56 @@ def main():
     lines = [
         "# Geeklog plugin metadata audit",
         "",
-        "Mode: `%s`" % args.mode,
+        "Mode: `%s`"
+        % args.mode,
         "",
-        "Repository filter: `%s`"
-        % args.repository,
+        (
+            "Repository filter: `%s`"
+            % args.repository
+        ),
         "",
         (
             "| Repository | Status | "
             "Confidence | Plugin id | "
+            "Plugin name | Name source | "
             "Icon | Action |"
         ),
         (
-            "|---|---|---|---|---|---|"
+            "|---|---|---|---|---|---|---|---|"
         ),
     ]
 
     for row in rows:
-        def cell(value):
-            return (
-                str(value)
-                .replace(
-                    "|",
-                    "\\|",
-                )
-                .replace(
-                    "\n",
-                    " ",
-                )
-            )
-
         lines.append(
-            "| %s | %s | %s | `%s` | `%s` | %s |"
+            (
+                "| %s | %s | %s | `%s` | "
+                "%s | %s | `%s` | %s |"
+            )
             % (
-                cell(
+                safe_cell(
                     row["repo"]
                 ),
-                cell(
+                safe_cell(
                     row["status"]
                 ),
-                cell(
+                safe_cell(
                     row["confidence"]
                 ),
-                cell(
+                safe_cell(
                     row["id"]
                 ),
-                cell(
+                safe_cell(
+                    row["name"]
+                ),
+                safe_cell(
+                    row[
+                        "name_source"
+                    ]
+                ),
+                safe_cell(
                     row["icon"]
                 ),
-                cell(
+                safe_cell(
                     row["action"]
                 ),
             )
@@ -1217,7 +1766,7 @@ def main():
     )
 
     for status in sorted(
-        counts.keys()
+        counts
     ):
         lines.append(
             "- `%s`: %d"
