@@ -1,0 +1,46 @@
+name: Plugin metadata audit
+
+on:
+  workflow_dispatch:
+    inputs:
+      mode:
+        description: "Audit only, or open pull requests in plugin repositories"
+        required: true
+        default: audit
+        type: choice
+        options:
+          - audit
+          - pr
+  schedule:
+    - cron: "17 5 * * 1"
+
+permissions:
+  contents: read
+
+jobs:
+  plugin-metadata:
+    runs-on: ubuntu-latest
+    env:
+      PLUGIN_METADATA_ORG: Geeklog-Plugins
+      PLUGIN_METADATA_MODE: ${{ github.event_name == 'workflow_dispatch' && inputs.mode || 'audit' }}
+      # Required only for mode=pr. Use a fine-grained PAT or GitHub App token
+      # with Contents: write and Pull requests: write on target repositories.
+      PLUGIN_METADATA_TOKEN: ${{ secrets.PLUGIN_METADATA_TOKEN }}
+
+    steps:
+      - name: Checkout memorandum
+        uses: actions/checkout@v5
+
+      - name: Audit plugin metadata
+        run: |
+          python3 tools/plugin_metadata.py \
+            --org "$PLUGIN_METADATA_ORG" \
+            --mode "$PLUGIN_METADATA_MODE" \
+            --report PLUGIN_METADATA_REPORT.md
+
+      - name: Publish audit report
+        uses: actions/upload-artifact@v4
+        with:
+          name: plugin-metadata-report
+          path: PLUGIN_METADATA_REPORT.md
+          if-no-files-found: error
