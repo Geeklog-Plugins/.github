@@ -296,7 +296,6 @@ def extract_function_body(
 
     depth = 1
     position = start
-
     quote = None
     escaped = False
 
@@ -316,10 +315,7 @@ def extract_function_body(
             position += 1
             continue
 
-        if char in (
-            "'",
-            '"',
-        ):
+        if char in ("'", '"'):
             quote = char
 
         elif char == "{":
@@ -409,40 +405,19 @@ def find_plugin_identity(
 def decode_php_single_quoted(value):
     return (
         value
-        .replace(
-            "\\'",
-            "'",
-        )
-        .replace(
-            "\\\\",
-            "\\",
-        )
+        .replace("\\'", "'")
+        .replace("\\\\", "\\")
     )
 
 
 def decode_php_double_quoted(value):
     return (
         value
-        .replace(
-            '\\"',
-            '"',
-        )
-        .replace(
-            "\\\\",
-            "\\",
-        )
-        .replace(
-            "\\n",
-            "\n",
-        )
-        .replace(
-            "\\r",
-            "\r",
-        )
-        .replace(
-            "\\t",
-            "\t",
-        )
+        .replace('\\"', '"')
+        .replace("\\\\", "\\")
+        .replace("\\n", "\n")
+        .replace("\\r", "\r")
+        .replace("\\t", "\t")
     )
 
 
@@ -531,26 +506,14 @@ def resolve_runtime_icon(
             r"(images/[A-Za-z0-9_./ -]+"
             r"\.(?:png|jpe?g|gif|svg|webp))"
         ),
-
         (
-            r"""['"]("""
-            r"images/[A-Za-z0-9_./ -]+"
-            r"\.(?:png|jpe?g|gif|svg|webp)"
-            r""")['"]"""
+            r"""['"](images/[A-Za-z0-9_./ -]+\.(?:png|jpe?g|gif|svg|webp))['"]"""
         ),
-
         (
-            r"""['"]("""
-            r"admin/images/[A-Za-z0-9_./ -]+"
-            r"\.(?:png|jpe?g|gif|svg|webp)"
-            r""")['"]"""
+            r"""['"](admin/images/[A-Za-z0-9_./ -]+\.(?:png|jpe?g|gif|svg|webp))['"]"""
         ),
-
         (
-            r"""['"]("""
-            r"public_html/[A-Za-z0-9_./ -]+"
-            r"\.(?:png|jpe?g|gif|svg|webp)"
-            r""")['"]"""
+            r"""['"](public_html/[A-Za-z0-9_./ -]+\.(?:png|jpe?g|gif|svg|webp))['"]"""
         ),
     )
 
@@ -564,10 +527,7 @@ def resolve_runtime_icon(
         ):
             relative_path = (
                 match.group(1)
-                .replace(
-                    "\\",
-                    "/",
-                )
+                .replace("\\", "/")
                 .strip()
                 .lstrip("/")
             )
@@ -588,13 +548,11 @@ def resolve_runtime_icon(
         ):
             candidates.insert(
                 0,
-                "admin/"
-                + relative_path,
+                "admin/" + relative_path,
             )
 
             candidates.append(
-                "public_html/"
-                + relative_path
+                "public_html/" + relative_path
             )
 
         for candidate in candidates:
@@ -683,9 +641,7 @@ def image_candidates(
         if stem in preferred_names:
             score -= 45
 
-        elif normalize(
-            stem
-        ) in preferred_names:
+        elif normalize(stem) in preferred_names:
             score -= 35
 
         for term in suspicious_terms:
@@ -786,23 +742,14 @@ def validate_manifest_data(
             )
 
         normalized_icon = (
-            icon.replace(
-                "\\",
-                "/",
-            )
+            icon.replace("\\", "/")
         )
 
         if (
-            normalized_icon.startswith(
-                "/"
-            )
+            normalized_icon.startswith("/")
             or "://" in normalized_icon
-            or normalized_icon.startswith(
-                "//"
-            )
-            or ".." in normalized_icon.split(
-                "/"
-            )
+            or normalized_icon.startswith("//")
+            or ".." in normalized_icon.split("/")
         ):
             return (
                 False,
@@ -1003,6 +950,41 @@ def create_plugin_json_on_branch(
     )
 
 
+def update_plugin_json_on_branch(
+    gh,
+    org,
+    repo,
+    manifest_text,
+    current_sha,
+):
+    encoded_manifest = (
+        base64.b64encode(
+            manifest_text.encode(
+                "utf-8"
+            )
+        ).decode(
+            "ascii"
+        )
+    )
+
+    gh.put(
+        "/repos/%s/%s/contents/plugin.json"
+        % (
+            org,
+            repo,
+        ),
+        {
+            "message": (
+                "Update static plugin "
+                "metadata manifest"
+            ),
+            "content": encoded_manifest,
+            "branch": PR_BRANCH,
+            "sha": current_sha,
+        },
+    )
+
+
 def create_metadata_pr(
     gh,
     org,
@@ -1058,6 +1040,62 @@ def open_pr_for_manifest(
     )
 
     if existing_pr:
+        plugin_json = (
+            fetch_optional_content(
+                gh,
+                org,
+                repo,
+                "plugin.json",
+                PR_BRANCH,
+            )
+        )
+
+        if plugin_json is None:
+            create_plugin_json_on_branch(
+                gh,
+                org,
+                repo,
+                manifest_text,
+            )
+
+            return existing_pr[
+                "html_url"
+            ]
+
+        existing_text = (
+            decode_content(
+                plugin_json
+            )
+        )
+
+        if existing_text == manifest_text:
+            return existing_pr[
+                "html_url"
+            ]
+
+        current_sha = (
+            plugin_json.get(
+                "sha"
+            )
+        )
+
+        if not current_sha:
+            raise RuntimeError(
+                (
+                    "Existing plugin.json "
+                    "has no blob SHA; "
+                    "cannot update safely"
+                )
+            )
+
+        update_plugin_json_on_branch(
+            gh,
+            org,
+            repo,
+            manifest_text,
+            current_sha,
+        )
+
         return existing_pr[
             "html_url"
         ]
@@ -1154,13 +1192,34 @@ def open_pr_for_manifest(
                 default_branch,
             )
 
-        raise RuntimeError(
-            (
-                "Branch %s already contains "
-                "a different plugin.json; "
-                "manual review required"
+        current_sha = (
+            plugin_json.get(
+                "sha"
             )
-            % PR_BRANCH
+        )
+
+        if not current_sha:
+            raise RuntimeError(
+                (
+                    "Existing plugin.json "
+                    "has no blob SHA; "
+                    "cannot update safely"
+                )
+            )
+
+        update_plugin_json_on_branch(
+            gh,
+            org,
+            repo,
+            manifest_text,
+            current_sha,
+        )
+
+        return create_metadata_pr(
+            gh,
+            org,
+            repo,
+            default_branch,
         )
 
     if branch_sha != base_sha:
@@ -1203,14 +1262,8 @@ def repository_selected(
 def safe_cell(value):
     return (
         str(value)
-        .replace(
-            "|",
-            "\\|",
-        )
-        .replace(
-            "\n",
-            " ",
-        )
+        .replace("|", "\\|")
+        .replace("\n", " ")
     )
 
 
@@ -1335,12 +1388,8 @@ def main():
 
         if (
             repo_name in DEFAULT_EXCLUDES
-            or repo.get(
-                "archived"
-            )
-            or repo.get(
-                "fork"
-            )
+            or repo.get("archived")
+            or repo.get("fork")
         ):
             rows.append(
                 {
