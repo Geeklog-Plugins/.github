@@ -4,7 +4,7 @@ on:
   workflow_dispatch:
     inputs:
       mode:
-        description: "Audit only, or open pull requests in plugin repositories"
+        description: "Audit metadata or create safe pull requests"
         required: true
         default: audit
         type: choice
@@ -12,27 +12,45 @@ on:
           - audit
           - pr
 
+      repository:
+        description: "Plugin repository to process, or all"
+        required: true
+        default: maps
+        type: string
+
   schedule:
     - cron: "17 5 * * 1"
 
 permissions:
   contents: read
 
+concurrency:
+  group: plugin-metadata-${{ github.event_name }}-${{ inputs.repository || 'all' }}
+  cancel-in-progress: false
+
 jobs:
   plugin-metadata:
     name: Audit Geeklog plugin metadata
+
     runs-on: ubuntu-latest
+
+    timeout-minutes: 15
 
     env:
       PLUGIN_METADATA_ORG: Geeklog-Plugins
-      PLUGIN_METADATA_MODE: ${{ github.event_name == 'workflow_dispatch' && inputs.mode || 'audit' }}
 
-      # Used for normal read-only API access.
+      PLUGIN_METADATA_MODE: >-
+        ${{ github.event_name == 'workflow_dispatch'
+            && inputs.mode
+            || 'audit' }}
+
+      PLUGIN_METADATA_REPOSITORY: >-
+        ${{ github.event_name == 'workflow_dispatch'
+            && inputs.repository
+            || 'all' }}
+
       GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
 
-      # Required only for mode=pr.
-      # This token must have access to the target Geeklog-Plugins repositories
-      # with Contents: read/write and Pull requests: read/write.
       PLUGIN_METADATA_TOKEN: ${{ secrets.PLUGIN_METADATA_TOKEN }}
 
     steps:
@@ -44,12 +62,37 @@ jobs:
         run: |
           set -euo pipefail
 
-          test -f scripts/plugin_metadata.py
+          if [ ! -f scripts/plugin_metadata.py ]; then
+            echo "::error::scripts/plugin_metadata.py was not found."
+            exit 1
+          fi
 
           python3 --version
-          python3 -m py_compile scripts/plugin_metadata.py
+
+          python3 -m py_compile \
+            scripts/plugin_metadata.py
 
           echo "Plugin metadata script is available and syntactically valid."
+
+      - name: Validate workflow inputs
+        shell: bash
+        run: |
+          set -euo pipefail
+
+          if [ -z "$PLUGIN_METADATA_REPOSITORY" ]; then
+            echo "::error::Repository filter is empty."
+            exit 1
+          fi
+
+          if [ "$PLUGIN_METADATA_MODE" = "pr" ]; then
+            if [ -z "$PLUGIN_METADATA_TOKEN" ]; then
+              echo "::error::PLUGIN_METADATA_TOKEN is required for PR mode."
+              exit 1
+            fi
+          fi
+
+          echo "Mode: $PLUGIN_METADATA_MODE"
+          echo "Repository: $PLUGIN_METADATA_REPOSITORY"
 
       - name: Run plugin metadata audit
         shell: bash
@@ -59,9 +102,10 @@ jobs:
           python3 scripts/plugin_metadata.py \
             --org "$PLUGIN_METADATA_ORG" \
             --mode "$PLUGIN_METADATA_MODE" \
+            --repository "$PLUGIN_METADATA_REPOSITORY" \
             --report PLUGIN_METADATA_REPORT.md
 
-      - name: Show report summary
+      - name: Show report
         if: always()
         shell: bash
         run: |
@@ -77,11 +121,14 @@ jobs:
         shell: bash
         run: |
           if [ -f PLUGIN_METADATA_REPORT.md ]; then
-            cat PLUGIN_METADATA_REPORT.md >> "$GITHUB_STEP_SUMMARY"
+            cat PLUGIN_METADATA_REPORT.md \
+              >> "$GITHUB_STEP_SUMMARY"
           else
-            echo "## Plugin metadata audit" >> "$GITHUB_STEP_SUMMARY"
-            echo "" >> "$GITHUB_STEP_SUMMARY"
-            echo "No report was generated." >> "$GITHUB_STEP_SUMMARY"
+            {
+              echo "## Plugin metadata audit"
+              echo
+              echo "No report was generated."
+            } >> "$GITHUB_STEP_SUMMARY"
           fi
 
       - name: Publish audit report
