@@ -32,9 +32,8 @@ IMAGE_EXTS = (
 
 PR_BRANCH = "automation/plugin-metadata"
 
-PLUGIN_ID_RE = re.compile(
-    r"^[A-Za-z0-9_.-]+$"
-)
+PLUGIN_ID_RE = re.compile(r"^[A-Za-z0-9_.-]+$")
+VERSION_RE = re.compile(r"^[0-9]+(?:\.[0-9]+){1,3}$")
 
 
 class GitHub:
@@ -42,18 +41,11 @@ class GitHub:
         self.token = token
 
     def request(self, method, path, payload=None):
-        url = (
-            path
-            if path.startswith("https://")
-            else API + path
-        )
+        url = path if path.startswith("https://") else API + path
 
         data = None
-
         if payload is not None:
-            data = json.dumps(
-                payload
-            ).encode("utf-8")
+            data = json.dumps(payload).encode("utf-8")
 
         request = urllib.request.Request(
             url,
@@ -65,12 +57,10 @@ class GitHub:
             "Accept",
             "application/vnd.github+json",
         )
-
         request.add_header(
             "X-GitHub-Api-Version",
             "2022-11-28",
         )
-
         request.add_header(
             "User-Agent",
             "geeklog-plugin-metadata-audit",
@@ -87,15 +77,8 @@ class GitHub:
                 request,
                 timeout=30,
             ) as response:
-                raw = response.read().decode(
-                    "utf-8"
-                )
-
-                return (
-                    json.loads(raw)
-                    if raw
-                    else None
-                )
+                raw = response.read().decode("utf-8")
+                return json.loads(raw) if raw else None
 
         except urllib.error.HTTPError as exc:
             body = exc.read().decode(
@@ -124,10 +107,7 @@ class GitHub:
             )
 
     def get(self, path):
-        return self.request(
-            "GET",
-            path,
-        )
+        return self.request("GET", path)
 
     def post(self, path, payload):
         return self.request(
@@ -148,11 +128,7 @@ def paginate(gh, path):
     page = 1
 
     while True:
-        separator = (
-            "&"
-            if "?" in path
-            else "?"
-        )
+        separator = "&" if "?" in path else "?"
 
         rows = gh.get(
             "%s%sper_page=100&page=%d"
@@ -192,10 +168,7 @@ def decode_content(obj):
 
     try:
         return base64.b64decode(
-            obj.get(
-                "content",
-                "",
-            )
+            obj.get("content", "")
         ).decode(
             "utf-8",
             "replace",
@@ -216,7 +189,6 @@ def fetch_content_object(
         path,
         safe="/",
     )
-
     quoted_ref = urllib.parse.quote(
         ref,
         safe="",
@@ -285,15 +257,12 @@ def extract_function_body(
         re.I,
     )
 
-    match = pattern.search(
-        source
-    )
+    match = pattern.search(source)
 
     if not match:
         return ""
 
     start = match.end()
-
     depth = 1
     position = start
     quote = None
@@ -305,10 +274,8 @@ def extract_function_body(
         if quote is not None:
             if escaped:
                 escaped = False
-
             elif char == "\\":
                 escaped = True
-
             elif char == quote:
                 quote = None
 
@@ -317,17 +284,13 @@ def extract_function_body(
 
         if char in ("'", '"'):
             quote = char
-
         elif char == "{":
             depth += 1
-
         elif char == "}":
             depth -= 1
 
             if depth == 0:
-                return source[
-                    start:position
-                ]
+                return source[start:position]
 
         position += 1
 
@@ -364,10 +327,7 @@ def find_plugin_identity(
         )
 
         if matches:
-            plugin_id = (
-                matches[0].lower()
-            )
-
+            plugin_id = matches[0].lower()
             function_name = (
                 "plugin_geticon_"
                 + plugin_id
@@ -385,9 +345,7 @@ def find_plugin_identity(
 
     fallback_id = repo.lower()
 
-    if not PLUGIN_ID_RE.match(
-        fallback_id
-    ):
+    if not PLUGIN_ID_RE.match(fallback_id):
         fallback_id = re.sub(
             r"[^a-z0-9_.-]+",
             "-",
@@ -451,25 +409,18 @@ def find_plugin_display_name(
             branch,
         )
 
-        match = pattern.search(
-            source
-        )
+        match = pattern.search(source)
 
         if not match:
             continue
 
         if match.group(1) is not None:
-            display_name = (
-                decode_php_single_quoted(
-                    match.group(1)
-                )
+            display_name = decode_php_single_quoted(
+                match.group(1)
             )
-
         else:
-            display_name = (
-                decode_php_double_quoted(
-                    match.group(2)
-                )
+            display_name = decode_php_double_quoted(
+                match.group(2)
             )
 
         display_name = " ".join(
@@ -531,26 +482,18 @@ def resolve_runtime_icon(
                 .strip()
                 .lstrip("/")
             )
-
-            found.append(
-                relative_path
-            )
+            found.append(relative_path)
 
     checked = set()
 
     for relative_path in found:
-        candidates = [
-            relative_path
-        ]
+        candidates = [relative_path]
 
-        if relative_path.startswith(
-            "images/"
-        ):
+        if relative_path.startswith("images/"):
             candidates.insert(
                 0,
                 "admin/" + relative_path,
             )
-
             candidates.append(
                 "public_html/" + relative_path
             )
@@ -561,14 +504,10 @@ def resolve_runtime_icon(
             if key in checked:
                 continue
 
-            checked.add(
-                key
-            )
+            checked.add(key)
 
             if key in repository_paths:
-                return repository_paths[
-                    key
-                ]
+                return repository_paths[key]
 
     return ""
 
@@ -603,44 +542,24 @@ def image_candidates(
     for path in paths:
         low = path.lower()
 
-        if not low.endswith(
-            IMAGE_EXTS
-        ):
+        if not low.endswith(IMAGE_EXTS):
             continue
 
-        filename = low.rsplit(
-            "/",
-            1,
-        )[-1]
-
-        stem = filename.rsplit(
-            ".",
-            1,
-        )[0]
-
+        filename = low.rsplit("/", 1)[-1]
+        stem = filename.rsplit(".", 1)[0]
         score = 100
 
-        if low.startswith(
-            "admin/images/"
-        ):
+        if low.startswith("admin/images/"):
             score -= 40
-
-        elif low.startswith(
-            "public_html/images/"
-        ):
+        elif low.startswith("public_html/images/"):
             score -= 25
-
-        elif low.startswith(
-            "images/"
-        ):
+        elif low.startswith("images/"):
             score -= 25
-
         elif "/images/" in low:
             score -= 15
 
         if stem in preferred_names:
             score -= 45
-
         elif normalize(stem) in preferred_names:
             score -= 35
 
@@ -668,55 +587,265 @@ def image_candidates(
     ]
 
 
+def normalize_requirement_version(value):
+    if not isinstance(value, str):
+        return ""
+
+    value = value.strip()
+
+    if value.lower().startswith("v"):
+        value = value[1:]
+
+    if not VERSION_RE.match(value):
+        return ""
+
+    return value
+
+
+def find_geeklog_requirement(
+    gh,
+    org,
+    repo,
+    branch,
+    paths,
+):
+    candidates = (
+        "autoinstall.php",
+        "install.php",
+        "functions.inc",
+    )
+
+    patterns = (
+        re.compile(
+            r"""['"]pi_gl_version['"]\s*=>\s*['"]([0-9]+(?:\.[0-9]+){1,3})['"]""",
+            re.I,
+        ),
+        re.compile(
+            r"""\$pi_gl_version\s*=\s*['"]([0-9]+(?:\.[0-9]+){1,3})['"]\s*;""",
+            re.I,
+        ),
+    )
+
+    for candidate in candidates:
+        if candidate not in paths:
+            continue
+
+        source = fetch_text(
+            gh,
+            org,
+            repo,
+            candidate,
+            branch,
+        )
+
+        for pattern in patterns:
+            match = pattern.search(source)
+
+            if match:
+                version = normalize_requirement_version(
+                    match.group(1)
+                )
+
+                if version:
+                    return {
+                        "version": version,
+                        "source": candidate + ":pi_gl_version",
+                        "confidence": "confirmed",
+                    }
+
+    return {
+        "version": "",
+        "source": "",
+        "confidence": "unknown",
+    }
+
+
+def find_php_requirement(
+    gh,
+    org,
+    repo,
+    branch,
+    paths,
+):
+    candidates = (
+        "autoinstall.php",
+        "functions.inc",
+        "install.php",
+        "README.md",
+    )
+
+    version_compare_pattern = re.compile(
+        r"""version_compare\s*\(\s*PHP_VERSION\s*,\s*['"]([0-9]+(?:\.[0-9]+){1,3})['"]\s*,\s*['"]<['"]\s*\)""",
+        re.I,
+    )
+
+    php_version_id_pattern = re.compile(
+        r"""PHP_VERSION_ID\s*<\s*([0-9]{5,6})""",
+        re.I,
+    )
+
+    textual_patterns = (
+        re.compile(
+            r"""(?:requires?|minimum|minimum\s+php|php\s+minimum|php)\s*[:>= ]+\s*PHP?\s*([0-9]+(?:\.[0-9]+){1,3})""",
+            re.I,
+        ),
+        re.compile(
+            r"""PHP\s+([0-9]+(?:\.[0-9]+){1,3})\s*(?:or newer|or later|and newer|\+|minimum|min)""",
+            re.I,
+        ),
+    )
+
+    for candidate in candidates:
+        if candidate not in paths:
+            continue
+
+        source = fetch_text(
+            gh,
+            org,
+            repo,
+            candidate,
+            branch,
+        )
+
+        match = version_compare_pattern.search(source)
+
+        if match:
+            version = normalize_requirement_version(
+                match.group(1)
+            )
+
+            if version:
+                return {
+                    "version": version,
+                    "source": candidate + ":version_compare(PHP_VERSION)",
+                    "confidence": "confirmed",
+                }
+
+        match = php_version_id_pattern.search(source)
+
+        if match:
+            version_id = int(match.group(1))
+            major = version_id // 10000
+            minor = (version_id % 10000) // 100
+            patch = version_id % 100
+            version = "%d.%d.%d" % (
+                major,
+                minor,
+                patch,
+            )
+
+            return {
+                "version": version,
+                "source": candidate + ":PHP_VERSION_ID",
+                "confidence": "confirmed",
+            }
+
+        if candidate == "README.md":
+            for pattern in textual_patterns:
+                match = pattern.search(source)
+
+                if match:
+                    version = normalize_requirement_version(
+                        match.group(1)
+                    )
+
+                    if version:
+                        return {
+                            "version": version,
+                            "source": candidate + ":text",
+                            "confidence": "candidate",
+                        }
+
+    return {
+        "version": "",
+        "source": "",
+        "confidence": "unknown",
+    }
+
+
+def find_requirements(
+    gh,
+    org,
+    repo,
+    branch,
+    paths,
+):
+    geeklog = find_geeklog_requirement(
+        gh,
+        org,
+        repo,
+        branch,
+        paths,
+    )
+    php = find_php_requirement(
+        gh,
+        org,
+        repo,
+        branch,
+        paths,
+    )
+
+    return {
+        "geeklog": geeklog,
+        "php": php,
+    }
+
+
+def manifest_requirements(data):
+    result = {
+        "geeklog": "",
+        "php": "",
+    }
+
+    if not isinstance(data, dict):
+        return result
+
+    requires = data.get("requires")
+
+    if not isinstance(requires, dict):
+        return result
+
+    for key in result:
+        value = requires.get(key)
+
+        if isinstance(value, str):
+            result[key] = value.strip()
+
+    return result
+
+
 def validate_manifest_data(
     data,
     paths=None,
 ):
-    if not isinstance(
-        data,
-        dict,
-    ):
+    if not isinstance(data, dict):
         return (
             False,
             "manifest is not a JSON object",
         )
 
-    if data.get(
-        "schema"
-    ) != 1:
+    if data.get("schema") != 1:
         return (
             False,
             "schema must be 1",
         )
 
-    plugin_id = data.get(
-        "id"
-    )
+    plugin_id = data.get("id")
 
     if (
-        not isinstance(
-            plugin_id,
-            str,
-        )
+        not isinstance(plugin_id, str)
         or not plugin_id.strip()
-        or not PLUGIN_ID_RE.match(
-            plugin_id
-        )
+        or not PLUGIN_ID_RE.match(plugin_id)
     ):
         return (
             False,
             "invalid plugin id",
         )
 
-    name = data.get(
-        "name"
-    )
+    name = data.get("name")
 
     if (
-        not isinstance(
-            name,
-            str,
-        )
+        not isinstance(name, str)
         or not name.strip()
     ):
         return (
@@ -724,16 +853,11 @@ def validate_manifest_data(
             "invalid plugin name",
         )
 
-    icon = data.get(
-        "icon"
-    )
+    icon = data.get("icon")
 
     if icon is not None:
         if (
-            not isinstance(
-                icon,
-                str,
-            )
+            not isinstance(icon, str)
             or not icon.strip()
         ):
             return (
@@ -741,8 +865,9 @@ def validate_manifest_data(
                 "invalid icon",
             )
 
-        normalized_icon = (
-            icon.replace("\\", "/")
+        normalized_icon = icon.replace(
+            "\\",
+            "/",
         )
 
         if (
@@ -782,6 +907,46 @@ def validate_manifest_data(
                 ),
             )
 
+    requires = data.get("requires")
+
+    if requires is not None:
+        if not isinstance(requires, dict):
+            return (
+                False,
+                "requires must be a JSON object",
+            )
+
+        allowed = {
+            "geeklog",
+            "php",
+        }
+
+        for key in requires:
+            if key not in allowed:
+                return (
+                    False,
+                    "unknown requires field: %s"
+                    % key,
+                )
+
+        for key in allowed:
+            if key not in requires:
+                continue
+
+            value = requires[key]
+
+            if (
+                not isinstance(value, str)
+                or not normalize_requirement_version(
+                    value
+                )
+            ):
+                return (
+                    False,
+                    "invalid requires.%s version"
+                    % key,
+                )
+
     return (
         True,
         "",
@@ -793,9 +958,7 @@ def valid_existing_manifest(
     paths=None,
 ):
     try:
-        data = json.loads(
-            text
-        )
+        data = json.loads(text)
 
     except Exception:
         return (
@@ -804,11 +967,9 @@ def valid_existing_manifest(
             "invalid JSON",
         )
 
-    valid, reason = (
-        validate_manifest_data(
-            data,
-            paths,
-        )
+    valid, reason = validate_manifest_data(
+        data,
+        paths,
     )
 
     return (
@@ -818,10 +979,74 @@ def valid_existing_manifest(
     )
 
 
+def merge_detected_requirements(
+    data,
+    requirements,
+):
+    merged = dict(data)
+    current = manifest_requirements(merged)
+    detected = {}
+    sources = {}
+
+    for kind in (
+        "geeklog",
+        "php",
+    ):
+        info = requirements.get(kind, {})
+        version = normalize_requirement_version(
+            info.get("version", "")
+        )
+
+        if not version:
+            continue
+
+        detected[kind] = version
+        sources[kind] = info.get(
+            "source",
+            "",
+        )
+
+    if not detected:
+        return (
+            merged,
+            False,
+            sources,
+        )
+
+    requires = merged.get("requires")
+
+    if not isinstance(requires, dict):
+        requires = {}
+    else:
+        requires = dict(requires)
+
+    changed = False
+
+    for kind, version in detected.items():
+        existing = current.get(
+            kind,
+            "",
+        )
+
+        if existing != version:
+            requires[kind] = version
+            changed = True
+
+    if requires:
+        merged["requires"] = requires
+
+    return (
+        merged,
+        changed,
+        sources,
+    )
+
+
 def create_manifest(
     plugin_id,
     plugin_name,
     icon,
+    requirements=None,
 ):
     data = {
         "schema": 1,
@@ -830,16 +1055,58 @@ def create_manifest(
         "icon": icon,
     }
 
-    valid, reason = (
-        validate_manifest_data(
-            data
-        )
-    )
+    if requirements:
+        requires = {}
+
+        for kind in (
+            "geeklog",
+            "php",
+        ):
+            info = requirements.get(
+                kind,
+                {},
+            )
+            version = normalize_requirement_version(
+                info.get(
+                    "version",
+                    "",
+                )
+            )
+
+            if version:
+                requires[kind] = version
+
+        if requires:
+            data["requires"] = requires
+
+    valid, reason = validate_manifest_data(data)
 
     if not valid:
         raise RuntimeError(
             (
                 "Refusing to create "
+                "invalid plugin.json: "
+            )
+            + reason
+        )
+
+    return (
+        json.dumps(
+            data,
+            indent=2,
+            ensure_ascii=False,
+        )
+        + "\n"
+    )
+
+
+def serialize_manifest(data):
+    valid, reason = validate_manifest_data(data)
+
+    if not valid:
+        raise RuntimeError(
+            (
+                "Refusing to serialize "
                 "invalid plugin.json: "
             )
             + reason
@@ -861,11 +1128,9 @@ def branch_ref(
     repo,
     branch,
 ):
-    encoded_branch = (
-        urllib.parse.quote(
-            branch,
-            safe="",
-        )
+    encoded_branch = urllib.parse.quote(
+        branch,
+        safe="",
     )
 
     try:
@@ -923,15 +1188,9 @@ def create_plugin_json_on_branch(
     repo,
     manifest_text,
 ):
-    encoded_manifest = (
-        base64.b64encode(
-            manifest_text.encode(
-                "utf-8"
-            )
-        ).decode(
-            "ascii"
-        )
-    )
+    encoded_manifest = base64.b64encode(
+        manifest_text.encode("utf-8")
+    ).decode("ascii")
 
     gh.put(
         "/repos/%s/%s/contents/plugin.json"
@@ -957,15 +1216,9 @@ def update_plugin_json_on_branch(
     manifest_text,
     current_sha,
 ):
-    encoded_manifest = (
-        base64.b64encode(
-            manifest_text.encode(
-                "utf-8"
-            )
-        ).decode(
-            "ascii"
-        )
-    )
+    encoded_manifest = base64.b64encode(
+        manifest_text.encode("utf-8")
+    ).decode("ascii")
 
     gh.put(
         "/repos/%s/%s/contents/plugin.json"
@@ -999,29 +1252,32 @@ def create_metadata_pr(
         ),
         {
             "title": (
-                "Add static plugin "
+                "Update static plugin "
                 "metadata manifest"
             ),
             "head": PR_BRANCH,
             "base": default_branch,
             "body": (
-                "Adds `plugin.json` using the "
-                "Geeklog plugin metadata convention."
-                "\n\n"
-                "The plugin name was read from "
-                "the English language file and "
-                "the icon was confirmed from the "
-                "existing `plugin_geticon_*()` "
-                "runtime callback."
-                "\n\n"
-                "No executable plugin code is changed."
+                "Adds or enriches `plugin.json` "
+                "using the Geeklog plugin metadata "
+                "convention.\n\n"
+                "Where available, the plugin name "
+                "is read from the English language "
+                "file, the icon is resolved from "
+                "`plugin_geticon_*()`, the Geeklog "
+                "minimum version is read from "
+                "`pi_gl_version`, and the PHP minimum "
+                "version is read from an explicit "
+                "runtime compatibility check.\n\n"
+                "Requirements are only added when "
+                "they can be detected with sufficient "
+                "confidence. No executable plugin "
+                "code is changed."
             ),
         },
     )
 
-    return pr[
-        "html_url"
-    ]
+    return pr["html_url"]
 
 
 def open_pr_for_manifest(
@@ -1031,23 +1287,19 @@ def open_pr_for_manifest(
     default_branch,
     manifest_text,
 ):
-    existing_pr = (
-        get_open_metadata_pr(
-            gh,
-            org,
-            repo,
-        )
+    existing_pr = get_open_metadata_pr(
+        gh,
+        org,
+        repo,
     )
 
     if existing_pr:
-        plugin_json = (
-            fetch_optional_content(
-                gh,
-                org,
-                repo,
-                "plugin.json",
-                PR_BRANCH,
-            )
+        plugin_json = fetch_optional_content(
+            gh,
+            org,
+            repo,
+            "plugin.json",
+            PR_BRANCH,
         )
 
         if plugin_json is None:
@@ -1058,26 +1310,16 @@ def open_pr_for_manifest(
                 manifest_text,
             )
 
-            return existing_pr[
-                "html_url"
-            ]
+            return existing_pr["html_url"]
 
-        existing_text = (
-            decode_content(
-                plugin_json
-            )
+        existing_text = decode_content(
+            plugin_json
         )
 
         if existing_text == manifest_text:
-            return existing_pr[
-                "html_url"
-            ]
+            return existing_pr["html_url"]
 
-        current_sha = (
-            plugin_json.get(
-                "sha"
-            )
-        )
+        current_sha = plugin_json.get("sha")
 
         if not current_sha:
             raise RuntimeError(
@@ -1096,15 +1338,11 @@ def open_pr_for_manifest(
             current_sha,
         )
 
-        return existing_pr[
-            "html_url"
-        ]
+        return existing_pr["html_url"]
 
-    encoded_default_branch = (
-        urllib.parse.quote(
-            default_branch,
-            safe="",
-        )
+    encoded_default_branch = urllib.parse.quote(
+        default_branch,
+        safe="",
     )
 
     base = gh.get(
@@ -1159,29 +1397,23 @@ def open_pr_for_manifest(
             default_branch,
         )
 
-    branch_sha = (
-        existing_branch[
-            "object"
-        ][
-            "sha"
-        ]
-    )
+    branch_sha = existing_branch[
+        "object"
+    ][
+        "sha"
+    ]
 
-    plugin_json = (
-        fetch_optional_content(
-            gh,
-            org,
-            repo,
-            "plugin.json",
-            PR_BRANCH,
-        )
+    plugin_json = fetch_optional_content(
+        gh,
+        org,
+        repo,
+        "plugin.json",
+        PR_BRANCH,
     )
 
     if plugin_json is not None:
-        existing_text = (
-            decode_content(
-                plugin_json
-            )
+        existing_text = decode_content(
+            plugin_json
         )
 
         if existing_text == manifest_text:
@@ -1192,11 +1424,7 @@ def open_pr_for_manifest(
                 default_branch,
             )
 
-        current_sha = (
-            plugin_json.get(
-                "sha"
-            )
-        )
+        current_sha = plugin_json.get("sha")
 
         if not current_sha:
             raise RuntimeError(
@@ -1267,6 +1495,35 @@ def safe_cell(value):
     )
 
 
+def requirement_report_value(info):
+    version = info.get(
+        "version",
+        "",
+    )
+
+    if not version:
+        return ""
+
+    confidence = info.get(
+        "confidence",
+        "",
+    )
+    source = info.get(
+        "source",
+        "",
+    )
+
+    parts = [version]
+
+    if confidence:
+        parts.append(confidence)
+
+    if source:
+        parts.append(source)
+
+    return " / ".join(parts)
+
+
 def main():
     parser = argparse.ArgumentParser(
         description=(
@@ -1310,17 +1567,14 @@ def main():
 
     parser.add_argument(
         "--report",
-        default=(
-            "PLUGIN_METADATA_REPORT.md"
-        ),
+        default="PLUGIN_METADATA_REPORT.md",
     )
 
     args = parser.parse_args()
 
     if (
         args.mode == "pr"
-        and args.repository.lower()
-        == "all"
+        and args.repository.lower() == "all"
     ):
         print(
             (
@@ -1330,14 +1584,12 @@ def main():
             ),
             file=sys.stderr,
         )
-
         return 2
 
     read_token = os.getenv(
         "GITHUB_TOKEN",
         "",
     )
-
     write_token = os.getenv(
         "PLUGIN_METADATA_TOKEN",
         "",
@@ -1352,18 +1604,13 @@ def main():
                 ),
                 file=sys.stderr,
             )
-
             return 2
 
         token = write_token
-
     else:
         token = read_token
 
-    gh = GitHub(
-        token
-    )
-
+    gh = GitHub(token)
     rows = []
     selected_found = False
 
@@ -1374,9 +1621,7 @@ def main():
     )
 
     for repo in repositories:
-        repo_name = repo[
-            "name"
-        ]
+        repo_name = repo["name"]
 
         if not repository_selected(
             repo_name,
@@ -1400,23 +1645,20 @@ def main():
                     "name": "",
                     "name_source": "-",
                     "icon": "",
+                    "geeklog": "",
+                    "php": "",
                     "action": (
                         "excluded, archived or fork"
                     ),
                 }
             )
-
             continue
 
-        default_branch = repo[
-            "default_branch"
-        ]
+        default_branch = repo["default_branch"]
 
-        encoded_branch = (
-            urllib.parse.quote(
-                default_branch,
-                safe="",
-            )
+        encoded_branch = urllib.parse.quote(
+            default_branch,
+            safe="",
         )
 
         tree = gh.get(
@@ -1431,9 +1673,7 @@ def main():
             )
         )
 
-        if tree.get(
-            "truncated"
-        ):
+        if tree.get("truncated"):
             rows.append(
                 {
                     "repo": repo_name,
@@ -1443,30 +1683,33 @@ def main():
                     "name": "",
                     "name_source": "-",
                     "icon": "",
+                    "geeklog": "",
+                    "php": "",
                     "action": (
                         "repository tree was "
                         "truncated by GitHub API"
                     ),
                 }
             )
-
             continue
 
         paths = [
-            item[
-                "path"
-            ]
+            item["path"]
             for item in tree.get(
                 "tree",
                 [],
             )
-            if item.get(
-                "type"
-            ) == "blob"
+            if item.get("type") == "blob"
         ]
 
-        path_set = set(
-            paths
+        path_set = set(paths)
+
+        requirements = find_requirements(
+            gh,
+            args.org,
+            repo_name,
+            default_branch,
+            path_set,
         )
 
         if "plugin.json" in path_set:
@@ -1478,75 +1721,127 @@ def main():
                 default_branch,
             )
 
-            valid, data, reason = (
-                valid_existing_manifest(
-                    text,
-                    path_set,
+            valid, data, reason = valid_existing_manifest(
+                text,
+                path_set,
+            )
+
+            if not valid:
+                rows.append(
+                    {
+                        "repo": repo_name,
+                        "status": "REVIEW",
+                        "confidence": "-",
+                        "id": (
+                            data.get("id", "")
+                            if isinstance(data, dict)
+                            else ""
+                        ),
+                        "name": (
+                            data.get("name", "")
+                            if isinstance(data, dict)
+                            else ""
+                        ),
+                        "name_source": "-",
+                        "icon": (
+                            data.get("icon", "")
+                            if isinstance(data, dict)
+                            else ""
+                        ),
+                        "geeklog": requirement_report_value(
+                            requirements["geeklog"]
+                        ),
+                        "php": requirement_report_value(
+                            requirements["php"]
+                        ),
+                        "action": (
+                            "invalid plugin.json: "
+                            + reason
+                        ),
+                    }
+                )
+                continue
+
+            enriched, changed, sources = (
+                merge_detected_requirements(
+                    data,
+                    requirements,
                 )
             )
+
+            current_requires = manifest_requirements(
+                data
+            )
+            final_requires = manifest_requirements(
+                enriched
+            )
+
+            status = "ENRICH" if changed else "OK"
+            action = (
+                "detected requirements can enrich "
+                "existing manifest"
+                if changed
+                else "existing manifest"
+            )
+
+            if args.mode == "pr" and changed:
+                manifest = serialize_manifest(
+                    enriched
+                )
+
+                try:
+                    action = open_pr_for_manifest(
+                        gh,
+                        args.org,
+                        repo_name,
+                        default_branch,
+                        manifest,
+                    )
+                    status = "PR"
+
+                except Exception as exc:
+                    status = "ERROR"
+                    action = str(exc)
+
+            confidence = "existing"
+
+            if changed:
+                confidence = (
+                    "existing + detected requirements"
+                )
 
             rows.append(
                 {
                     "repo": repo_name,
-                    "status": (
-                        "OK"
-                        if valid
-                        else "REVIEW"
-                    ),
-                    "confidence": (
-                        "existing"
-                        if valid
-                        else "-"
-                    ),
-                    "id": (
-                        data.get(
-                            "id",
+                    "status": status,
+                    "confidence": confidence,
+                    "id": data.get("id", ""),
+                    "name": data.get("name", ""),
+                    "name_source": "plugin.json",
+                    "icon": data.get("icon", ""),
+                    "geeklog": (
+                        final_requires.get(
+                            "geeklog",
                             "",
                         )
-                        if isinstance(
-                            data,
-                            dict,
-                        )
-                        else ""
-                    ),
-                    "name": (
-                        data.get(
-                            "name",
+                        or current_requires.get(
+                            "geeklog",
                             "",
                         )
-                        if isinstance(
-                            data,
-                            dict,
-                        )
-                        else ""
                     ),
-                    "name_source": (
-                        "plugin.json"
-                        if valid
-                        else "-"
-                    ),
-                    "icon": (
-                        data.get(
-                            "icon",
+                    "php": (
+                        final_requires.get(
+                            "php",
                             "",
                         )
-                        if isinstance(
-                            data,
-                            dict,
-                        )
-                        else ""
-                    ),
-                    "action": (
-                        "existing manifest"
-                        if valid
-                        else (
-                            "invalid plugin.json: "
-                            + reason
+                        or current_requires.get(
+                            "php",
+                            "",
                         )
                     ),
+                    "action": action,
                 }
             )
-
             continue
 
         identity = find_plugin_identity(
@@ -1557,9 +1852,7 @@ def main():
             path_set,
         )
 
-        plugin_id = identity[
-            "id"
-        ]
+        plugin_id = identity["id"]
 
         plugin_name, name_source = (
             find_plugin_display_name(
@@ -1571,86 +1864,52 @@ def main():
             )
         )
 
-        confirmed_icon = (
-            resolve_runtime_icon(
-                identity[
-                    "icon_body"
-                ],
-                paths,
-            )
+        confirmed_icon = resolve_runtime_icon(
+            identity["icon_body"],
+            paths,
         )
 
         if confirmed_icon:
             icon = confirmed_icon
 
-            if name_source.startswith(
-                "language/"
-            ):
-                status = (
-                    "CONFIRMED"
-                )
-
+            if name_source.startswith("language/"):
+                status = "CONFIRMED"
                 confidence = (
                     "runtime callback + "
                     "english plugin_name"
                 )
-
             else:
-                status = (
-                    "CANDIDATE"
-                )
-
+                status = "CANDIDATE"
                 confidence = (
                     "runtime callback + "
                     "repository-name fallback"
                 )
 
         else:
-            candidates = (
-                image_candidates(
-                    paths,
-                    plugin_id,
-                    repo_name,
-                )
+            candidates = image_candidates(
+                paths,
+                plugin_id,
+                repo_name,
             )
 
             if candidates:
-                icon = candidates[
-                    0
-                ]
-
-                status = (
-                    "CANDIDATE"
-                )
-
-                confidence = (
-                    "heuristic icon"
-                )
-
+                icon = candidates[0]
+                status = "CANDIDATE"
+                confidence = "heuristic icon"
             else:
                 icon = ""
-
-                status = (
-                    "REVIEW"
-                )
-
+                status = "REVIEW"
                 confidence = "-"
 
         if status == "REVIEW":
-            action = (
-                "no reliable icon found"
-            )
-
+            action = "no reliable icon found"
         elif status == "CANDIDATE":
             action = (
                 "audit only; manual "
                 "review required"
             )
-
         else:
-            action = (
-                "audit only"
-            )
+            action = "audit only"
 
         if args.mode == "pr":
             if status != "CONFIRMED":
@@ -1658,37 +1917,27 @@ def main():
                     "PR not created: only "
                     "CONFIRMED metadata is eligible"
                 )
-
             else:
-                manifest = (
-                    create_manifest(
-                        plugin_id,
-                        plugin_name,
-                        icon,
-                    )
+                manifest = create_manifest(
+                    plugin_id,
+                    plugin_name,
+                    icon,
+                    requirements,
                 )
 
                 try:
-                    action = (
-                        open_pr_for_manifest(
-                            gh,
-                            args.org,
-                            repo_name,
-                            default_branch,
-                            manifest,
-                        )
+                    action = open_pr_for_manifest(
+                        gh,
+                        args.org,
+                        repo_name,
+                        default_branch,
+                        manifest,
                     )
-
                     status = "PR"
 
                 except Exception as exc:
-                    status = (
-                        "ERROR"
-                    )
-
-                    action = str(
-                        exc
-                    )
+                    status = "ERROR"
+                    action = str(exc)
 
         rows.append(
             {
@@ -1699,13 +1948,18 @@ def main():
                 "name": plugin_name,
                 "name_source": name_source,
                 "icon": icon,
+                "geeklog": requirement_report_value(
+                    requirements["geeklog"]
+                ),
+                "php": requirement_report_value(
+                    requirements["php"]
+                ),
                 "action": action,
             }
         )
 
     if (
-        args.repository.lower()
-        != "all"
+        args.repository.lower() != "all"
         and not selected_found
     ):
         print(
@@ -1720,22 +1974,16 @@ def main():
             ),
             file=sys.stderr,
         )
-
         return 3
 
     rows.sort(
-        key=lambda row: (
-            row[
-                "repo"
-            ].lower()
-        )
+        key=lambda row: row["repo"].lower()
     )
 
     lines = [
         "# Geeklog plugin metadata audit",
         "",
-        "Mode: `%s`"
-        % args.mode,
+        "Mode: `%s`" % args.mode,
         "",
         (
             "Repository filter: `%s`"
@@ -1746,10 +1994,11 @@ def main():
             "| Repository | Status | "
             "Confidence | Plugin id | "
             "Plugin name | Name source | "
-            "Icon | Action |"
+            "Icon | Geeklog min | PHP min | "
+            "Action |"
         ),
         (
-            "|---|---|---|---|---|---|---|---|"
+            "|---|---|---|---|---|---|---|---|---|---|"
         ),
     ]
 
@@ -1757,48 +2006,28 @@ def main():
         lines.append(
             (
                 "| %s | %s | %s | `%s` | "
-                "%s | %s | `%s` | %s |"
+                "%s | %s | `%s` | %s | %s | %s |"
             )
             % (
-                safe_cell(
-                    row["repo"]
-                ),
-                safe_cell(
-                    row["status"]
-                ),
-                safe_cell(
-                    row["confidence"]
-                ),
-                safe_cell(
-                    row["id"]
-                ),
-                safe_cell(
-                    row["name"]
-                ),
-                safe_cell(
-                    row[
-                        "name_source"
-                    ]
-                ),
-                safe_cell(
-                    row["icon"]
-                ),
-                safe_cell(
-                    row["action"]
-                ),
+                safe_cell(row["repo"]),
+                safe_cell(row["status"]),
+                safe_cell(row["confidence"]),
+                safe_cell(row["id"]),
+                safe_cell(row["name"]),
+                safe_cell(row["name_source"]),
+                safe_cell(row["icon"]),
+                safe_cell(row["geeklog"]),
+                safe_cell(row["php"]),
+                safe_cell(row["action"]),
             )
         )
 
     counts = {}
 
     for row in rows:
-        status = row[
-            "status"
-        ]
+        status = row["status"]
 
-        counts[
-            status
-        ] = (
+        counts[status] = (
             counts.get(
                 status,
                 0,
@@ -1814,16 +2043,12 @@ def main():
         ]
     )
 
-    for status in sorted(
-        counts
-    ):
+    for status in sorted(counts):
         lines.append(
             "- `%s`: %d"
             % (
                 status,
-                counts[
-                    status
-                ],
+                counts[status],
             )
         )
 
@@ -1833,9 +2058,7 @@ def main():
         encoding="utf-8",
     ) as handle:
         handle.write(
-            "\n".join(
-                lines
-            )
+            "\n".join(lines)
             + "\n"
         )
 
@@ -1846,15 +2069,11 @@ def main():
         )
     )
 
-    if counts.get(
-        "ERROR"
-    ):
+    if counts.get("ERROR"):
         return 1
 
     return 0
 
 
 if __name__ == "__main__":
-    sys.exit(
-        main()
-    )
+    sys.exit(main())
