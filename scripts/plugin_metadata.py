@@ -18,7 +18,6 @@ DEFAULT_EXCLUDES = {
     "artwork",
     "language-audit",
     "memorandum",
-    "vthemes",
 }
 
 IMAGE_EXTS = (
@@ -1723,7 +1722,6 @@ def main():
         if (
             repo_name in DEFAULT_EXCLUDES
             or repo.get("archived")
-            or repo.get("fork")
         ):
             rows.append(
                 {
@@ -1737,7 +1735,7 @@ def main():
                     "geeklog": "",
                     "php": "",
                     "action": (
-                        "excluded, archived or fork"
+                        "excluded or archived"
                     ),
                 }
             )
