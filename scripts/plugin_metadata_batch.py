@@ -8,6 +8,16 @@ import sys
 import tempfile
 
 
+ELIGIBLE_STATUSES = (
+    "CONFIRMED",
+    "ENRICH",
+)
+
+REPOSITORY_RE = re.compile(
+    r"^[A-Za-z0-9_.-]+$"
+)
+
+
 def run_command(args, env=None):
     process = subprocess.run(
         args,
@@ -24,32 +34,92 @@ def run_command(args, env=None):
     )
 
 
-def parse_confirmed_repositories(report_text):
-    repositories = []
+def split_markdown_row(line):
+    if not line.startswith("|"):
+        return []
+
+    return [
+        cell.strip()
+        for cell in (
+            line.strip()
+            .strip("|")
+            .split("|")
+        )
+    ]
+
+
+def markdown_table_rows(report_text):
+    """
+    Parse the first Markdown table whose header contains Repository and Status.
+
+    Rows are returned as dictionaries keyed by the actual column names so the
+    batch script does not depend on fixed column indexes.
+    """
+    headers = None
+    rows = []
 
     for line in report_text.splitlines():
         if not line.startswith("|"):
+            if headers is not None and rows:
+                break
             continue
 
-        cells = [
-            cell.strip()
-            for cell in line.strip().strip("|").split("|")
-        ]
+        cells = split_markdown_row(line)
 
-        if len(cells) < 8:
+        if not cells:
             continue
 
-        repository = cells[0]
-        status = cells[1]
-
-        if repository in ("Repository", "---"):
+        if headers is None:
+            if (
+                "Repository" in cells
+                and "Status" in cells
+            ):
+                headers = cells
             continue
+
+        # Skip Markdown separator row.
+        if all(
+            re.match(r"^:?-{3,}:?$", cell)
+            for cell in cells
+        ):
+            continue
+
+        # Ignore malformed rows instead of guessing.
+        if len(cells) != len(headers):
+            continue
+
+        rows.append(
+            dict(
+                zip(
+                    headers,
+                    cells,
+                )
+            )
+        )
+
+    return rows
+
+
+def parse_eligible_repositories(report_text):
+    repositories = []
+
+    for row in markdown_table_rows(
+        report_text
+    ):
+        repository = row.get(
+            "Repository",
+            "",
+        ).strip()
+
+        status = row.get(
+            "Status",
+            "",
+        ).strip()
 
         if (
-            status == "CONFIRMED"
-            and re.match(
-                r"^[A-Za-z0-9_.-]+$",
-                repository,
+            status in ELIGIBLE_STATUSES
+            and REPOSITORY_RE.match(
+                repository
             )
         ):
             repositories.append(
@@ -59,35 +129,88 @@ def parse_confirmed_repositories(report_text):
     return repositories
 
 
+def parse_repository_result(
+    report_text,
+    repository,
+):
+    """
+    Return (status, action) for one repository from a per-repository report.
+    """
+    for row in markdown_table_rows(
+        report_text
+    ):
+        if (
+            row.get(
+                "Repository",
+                "",
+            ).strip()
+            != repository
+        ):
+            continue
+
+        return (
+            row.get(
+                "Status",
+                "",
+            ).strip(),
+            row.get(
+                "Action",
+                "",
+            ).strip(),
+        )
+
+    return (
+        "",
+        "",
+    )
+
+
 def main():
     parser = argparse.ArgumentParser(
         description=(
-            "Create safe plugin metadata PRs "
-            "for CONFIRMED repositories only."
+            "Create safe Geeklog plugin metadata PRs "
+            "for repositories classified as "
+            "CONFIRMED or ENRICH by the initial audit."
         )
     )
 
     parser.add_argument(
         "--org",
         required=True,
+        help=(
+            "GitHub organization containing "
+            "the plugin repositories."
+        ),
     )
 
     parser.add_argument(
         "--report",
-        default="PLUGIN_METADATA_REPORT.md",
+        default=(
+            "PLUGIN_METADATA_BATCH_REPORT.md"
+        ),
+        help=(
+            "Path of the final batch report."
+        ),
     )
 
     parser.add_argument(
         "--max-prs",
         type=int,
         default=15,
+        help=(
+            "Maximum number of PR attempts "
+            "during this run."
+        ),
     )
 
     args = parser.parse_args()
 
     if args.max_prs < 1:
         print(
-            "ERROR: --max-prs must be at least 1.",
+            (
+                "ERROR: --max-prs must "
+                "be at least 1."
+            ),
             file=sys.stderr,
         )
         return 2
@@ -114,7 +237,10 @@ def main():
 
     if not os.path.isfile(script):
         print(
-            "ERROR: plugin_metadata.py was not found.",
+            (
+                "ERROR: plugin_metadata.py "
+                "was not found."
+            ),
             file=sys.stderr,
         )
         return 2
@@ -126,11 +252,9 @@ def main():
         )
 
         audit_env = os.environ.copy()
-
         audit_env[
             "PLUGIN_METADATA_MODE"
         ] = "audit"
-
         audit_env[
             "PLUGIN_METADATA_REPOSITORY"
         ] = "all"
@@ -180,27 +304,32 @@ def main():
                 "r",
                 encoding="utf-8",
             ) as handle:
-                audit_text = handle.read()
+                audit_text = (
+                    handle.read()
+                )
 
         except OSError as exc:
             print(
-                "ERROR: could not read audit report: %s"
+                (
+                    "ERROR: could not read "
+                    "audit report: %s"
+                )
                 % exc,
                 file=sys.stderr,
             )
             return 2
 
-        confirmed = (
-            parse_confirmed_repositories(
+        eligible = (
+            parse_eligible_repositories(
                 audit_text
             )
         )
 
-        selected = confirmed[
+        selected = eligible[
             :args.max_prs
         ]
 
-        deferred = confirmed[
+        deferred = eligible[
             args.max_prs:
         ]
 
@@ -270,34 +399,36 @@ def main():
             if os.path.isfile(
                 repo_report
             ):
-                with open(
-                    repo_report,
-                    "r",
-                    encoding="utf-8",
-                ) as handle:
-                    for line in handle:
-                        if not line.startswith(
-                            "|"
-                        ):
-                            continue
+                try:
+                    with open(
+                        repo_report,
+                        "r",
+                        encoding="utf-8",
+                    ) as handle:
+                        report_text = (
+                            handle.read()
+                        )
 
-                        cells = [
-                            cell.strip()
-                            for cell in (
-                                line.strip()
-                                .strip("|")
-                                .split("|")
-                            )
-                        ]
+                    parsed_status, parsed_action = (
+                        parse_repository_result(
+                            report_text,
+                            repository,
+                        )
+                    )
 
-                        if (
-                            len(cells) >= 8
-                            and cells[0]
-                            == repository
-                        ):
-                            status = cells[1]
-                            action = cells[7]
-                            break
+                    if parsed_status:
+                        status = parsed_status
+
+                    if parsed_action:
+                        action = parsed_action
+
+                except OSError as exc:
+                    if not action:
+                        action = (
+                            "could not read "
+                            "repository report: %s"
+                            % exc
+                        )
 
             if (
                 code != 0
@@ -316,28 +447,41 @@ def main():
             )
 
         lines = [
-            "# Geeklog plugin metadata batch PR report",
+            (
+                "# Geeklog plugin metadata "
+                "batch PR report"
+            ),
             "",
             "Mode: `pr`",
             "",
-            "Repository filter: `all`",
-            "",
             (
-                "Only repositories classified as "
-                "`CONFIRMED` by the initial audit "
-                "are eligible."
+                "Repository filter: `all`"
             ),
             "",
             (
-                "Maximum PR attempts for this run: `%d`"
+                "Repositories classified as "
+                "`CONFIRMED` or `ENRICH` "
+                "by the initial audit are eligible."
+            ),
+            "",
+            (
+                "Maximum PR attempts for "
+                "this run: `%d`"
                 % args.max_prs
             ),
             "",
-            "| Repository | Result | Action |",
+            (
+                "| Repository | Result | "
+                "Action |"
+            ),
             "|---|---|---|",
         ]
 
-        for repository, status, action in results:
+        for (
+            repository,
+            status,
+            action,
+        ) in results:
             lines.append(
                 "| %s | %s | %s |"
                 % (
@@ -365,18 +509,31 @@ def main():
             if row[1] == "ERROR"
         ]
 
+        successful = [
+            row
+            for row in results
+            if row[1] in (
+                "PR",
+                "DONE",
+            )
+        ]
+
         lines.extend(
             [
                 "",
                 "## Summary",
                 "",
                 (
-                    "- `CONFIRMED found`: %d"
-                    % len(confirmed)
+                    "- `Eligible found`: %d"
+                    % len(eligible)
                 ),
                 (
                     "- `PR attempts`: %d"
                     % len(selected)
+                ),
+                (
+                    "- `Successful runs`: %d"
+                    % len(successful)
                 ),
                 (
                     "- `Deferred by limit`: %d"
@@ -389,15 +546,27 @@ def main():
             ]
         )
 
-        with open(
-            args.report,
-            "w",
-            encoding="utf-8",
-        ) as handle:
-            handle.write(
-                "\n".join(lines)
-                + "\n"
+        try:
+            with open(
+                args.report,
+                "w",
+                encoding="utf-8",
+            ) as handle:
+                handle.write(
+                    "\n".join(lines)
+                    + "\n"
+                )
+
+        except OSError as exc:
+            print(
+                (
+                    "ERROR: could not write "
+                    "batch report: %s"
+                )
+                % exc,
+                file=sys.stderr,
             )
+            return 2
 
         return (
             1
