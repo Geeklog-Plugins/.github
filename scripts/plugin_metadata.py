@@ -304,7 +304,25 @@ def find_plugin_identity(
     branch,
     paths,
 ):
+    plugin_id = ""
+    id_source = ""
+    icon_function = ""
+    icon_body = ""
+
+    id_patterns = (
+        re.compile(
+            r"""['"]pi_name['"]\s*=>\s*['"]([A-Za-z0-9_.-]+)['"]""",
+            re.I,
+        ),
+        re.compile(
+            r"""\$pi_name\s*=\s*['"]([A-Za-z0-9_.-]+)['"]\s*;""",
+            re.I,
+        ),
+    )
+
     for candidate in (
+        "autoinstall.php",
+        "install.php",
         "functions.inc",
         "api.inc",
     ):
@@ -319,29 +337,62 @@ def find_plugin_identity(
             branch,
         )
 
-        matches = re.findall(
-            r"function\s+plugin_geticon_"
-            r"([A-Za-z0-9_]+)\s*\(",
-            source,
-            re.I,
-        )
+        if not plugin_id:
+            for pattern in id_patterns:
+                match = pattern.search(source)
 
-        if matches:
-            plugin_id = matches[0].lower()
-            function_name = (
-                "plugin_geticon_"
-                + plugin_id
+                if match:
+                    candidate_id = match.group(1).strip()
+
+                    if PLUGIN_ID_RE.match(candidate_id):
+                        plugin_id = candidate_id.lower()
+                        id_source = candidate + ":pi_name"
+                        break
+
+        if candidate in (
+            "functions.inc",
+            "api.inc",
+        ):
+            matches = re.findall(
+                r"function\s+plugin_geticon_"
+                r"([A-Za-z0-9_]+)\s*\(",
+                source,
+                re.I,
             )
 
-            return {
-                "id": plugin_id,
-                "source_file": candidate,
-                "icon_function": function_name,
-                "icon_body": extract_function_body(
-                    source,
-                    function_name,
-                ),
-            }
+            if matches:
+                callback_id = matches[0].lower()
+                callback = (
+                    "plugin_geticon_"
+                    + callback_id
+                )
+
+                if not plugin_id:
+                    plugin_id = callback_id
+                    id_source = candidate + ":plugin_geticon"
+
+                if callback_id == plugin_id:
+                    icon_function = callback
+                    icon_body = extract_function_body(
+                        source,
+                        callback,
+                    )
+
+        if (
+            plugin_id
+            and id_source.endswith(":pi_name")
+            and icon_body
+        ):
+            break
+
+    if plugin_id:
+        return {
+            "id": plugin_id,
+            "id_source": id_source,
+            "confirmed": True,
+            "icon_function": icon_function,
+            "icon_body": icon_body,
+        }
 
     fallback_id = repo.lower()
 
@@ -354,7 +405,8 @@ def find_plugin_identity(
 
     return {
         "id": fallback_id,
-        "source_file": "",
+        "id_source": "repository fallback",
+        "confirmed": False,
         "icon_function": "",
         "icon_body": "",
     }
@@ -997,7 +1049,10 @@ def merge_detected_requirements(
             info.get("version", "")
         )
 
-        if not version:
+        if (
+            not version
+            or info.get("confidence") != "confirmed"
+        ):
             continue
 
         detected[kind] = version
@@ -1052,8 +1107,10 @@ def create_manifest(
         "schema": 1,
         "id": plugin_id,
         "name": plugin_name,
-        "icon": icon,
     }
+
+    if icon:
+        data["icon"] = icon
 
     if requirements:
         requires = {}
@@ -1073,7 +1130,10 @@ def create_manifest(
                 )
             )
 
-            if version:
+            if (
+                version
+                and info.get("confidence") == "confirmed"
+            ):
                 requires[kind] = version
 
         if requires:
@@ -1263,8 +1323,9 @@ def create_metadata_pr(
                 "convention.\n\n"
                 "Where available, the plugin name "
                 "is read from the English language "
-                "file, the icon is resolved from "
-                "`plugin_geticon_*()`, the Geeklog "
+                "file. When a reliable icon can "
+                "be resolved it is included, but the "
+                "icon is optional. The Geeklog "
                 "minimum version is read from "
                 "`pi_gl_version`, and the PHP minimum "
                 "version is read from an explicit "
@@ -1383,12 +1444,40 @@ def open_pr_for_manifest(
             },
         )
 
-        create_plugin_json_on_branch(
+        plugin_json = fetch_optional_content(
             gh,
             org,
             repo,
-            manifest_text,
+            "plugin.json",
+            PR_BRANCH,
         )
+
+        if plugin_json is None:
+            create_plugin_json_on_branch(
+                gh,
+                org,
+                repo,
+                manifest_text,
+            )
+        else:
+            current_sha = plugin_json.get("sha")
+
+            if not current_sha:
+                raise RuntimeError(
+                    (
+                        "Existing plugin.json "
+                        "has no blob SHA; "
+                        "cannot update safely"
+                    )
+                )
+
+            update_plugin_json_on_branch(
+                gh,
+                org,
+                repo,
+                manifest_text,
+                current_sha,
+            )
 
         return create_metadata_pr(
             gh,
@@ -1869,23 +1958,9 @@ def main():
             paths,
         )
 
-        if confirmed_icon:
-            icon = confirmed_icon
+        icon = confirmed_icon
 
-            if name_source.startswith("language/"):
-                status = "CONFIRMED"
-                confidence = (
-                    "runtime callback + "
-                    "english plugin_name"
-                )
-            else:
-                status = "CANDIDATE"
-                confidence = (
-                    "runtime callback + "
-                    "repository-name fallback"
-                )
-
-        else:
+        if not icon:
             candidates = image_candidates(
                 paths,
                 plugin_id,
@@ -1894,22 +1969,58 @@ def main():
 
             if candidates:
                 icon = candidates[0]
-                status = "CANDIDATE"
-                confidence = "heuristic icon"
-            else:
-                icon = ""
-                status = "REVIEW"
-                confidence = "-"
 
-        if status == "REVIEW":
-            action = "no reliable icon found"
-        elif status == "CANDIDATE":
-            action = (
-                "audit only; manual "
-                "review required"
+        identity_confirmed = bool(
+            identity.get("confirmed")
+        )
+        name_confirmed = (
+            name_source.startswith("language/")
+        )
+
+        if (
+            identity_confirmed
+            and name_confirmed
+        ):
+            status = "CONFIRMED"
+            confidence = (
+                identity.get(
+                    "id_source",
+                    "confirmed identity",
+                )
+                + " + english plugin_name"
+            )
+        elif identity_confirmed:
+            status = "CANDIDATE"
+            confidence = (
+                identity.get(
+                    "id_source",
+                    "confirmed identity",
+                )
+                + " + repository-name fallback"
             )
         else:
+            status = "CANDIDATE"
+            confidence = (
+                "repository-name id fallback"
+                + (
+                    " + english plugin_name"
+                    if name_confirmed
+                    else " + repository-name fallback"
+                )
+            )
+
+        if status == "CANDIDATE":
+            action = (
+                "audit only; manual "
+                "identity/name review required"
+            )
+        elif icon:
             action = "audit only"
+        else:
+            action = (
+                "audit only; icon unavailable "
+                "(icon is optional)"
+            )
 
         if args.mode == "pr":
             if status != "CONFIRMED":
