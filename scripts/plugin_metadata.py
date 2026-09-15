@@ -1975,26 +1975,22 @@ def main():
             name_source.startswith("language/")
         )
 
-        if (
-            identity_confirmed
-            and name_confirmed
-        ):
+        if identity_confirmed:
+            if not name_confirmed:
+                plugin_name = plugin_id
+                name_source = "plugin id fallback"
+
             status = "CONFIRMED"
             confidence = (
                 identity.get(
                     "id_source",
                     "confirmed identity",
                 )
-                + " + english plugin_name"
-            )
-        elif identity_confirmed:
-            status = "CANDIDATE"
-            confidence = (
-                identity.get(
-                    "id_source",
-                    "confirmed identity",
+                + (
+                    " + english plugin_name"
+                    if name_confirmed
+                    else " + plugin id fallback"
                 )
-                + " + repository-name fallback"
             )
         else:
             status = "CANDIDATE"
@@ -2010,7 +2006,7 @@ def main():
         if status == "CANDIDATE":
             action = (
                 "audit only; manual "
-                "identity/name review required"
+                "plugin id review required"
             )
         elif icon:
             action = "audit only"
